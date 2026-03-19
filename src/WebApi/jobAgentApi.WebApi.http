@@ -1,0 +1,6 @@
+@jobAgentApi.WebApi_HostAddress = http://localhost:5094
+
+GET {{jobAgentApi.WebApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
