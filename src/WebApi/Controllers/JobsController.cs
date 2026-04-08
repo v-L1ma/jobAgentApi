@@ -1,5 +1,6 @@
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobById;
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobs;
+using jobAgentApi.Application.Features.Jobs.Queries.GetJobsAsync;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,6 +19,27 @@ public class JobsController : ControllerBase
     public JobsController(ISender sender)
     {
         _sender = sender;
+    }
+
+    /// <summary>
+    /// Busca vagas com scraping assíncrono, cache e polling.
+    /// Retorna status parcial quando os dados não estão em cache.
+    /// </summary>
+    [HttpGet("search")]
+    [ProducesResponseType(typeof(JobSearchResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetJobsAsync(
+        [FromQuery] string? query,
+        [FromQuery] string? stack,
+        [FromQuery] string? location,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+        Guid.TryParse(userIdStr, out Guid userId);
+        
+        var searchQuery = new GetJobsAsyncQuery(query, stack, location, page, pageSize, userId);
+        var result = await _sender.Send(searchQuery);
+        return Ok(result);
     }
 
     [HttpGet]
