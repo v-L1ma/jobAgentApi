@@ -1,0 +1,535 @@
+using jobAgentApi.Application.Abstractions;
+using jobAgentApi.Application.Repositories;
+using jobAgentApi.Domain.Entities;
+using jobAgentApi.Domain.Enums;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Microsoft.Playwright;
+
+namespace jobAgentApi.Infrastructure.Services.JobScraper;
+
+internal sealed class JobScraperExecutionService : IJobScraperExecutionService
+{
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILinkedInJobScraper _linkedInJobScraper;
+    private readonly IGuypJobScraper _guypJobScraper;
+    private readonly IGreenhouseJobScraper _greenhouseJobScraper;
+    private readonly IOptions<JobScraperOptions> _options;
+    private readonly ILogger<JobScraperExecutionService> _logger;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
+
+    public JobScraperExecutionService(
+        IServiceScopeFactory scopeFactory,
+        ILinkedInJobScraper linkedInJobScraper,
+        IGuypJobScraper guypJobScraper,
+        IGreenhouseJobScraper greenhouseJobScraper,
+        IOptions<JobScraperOptions> options,
+        ILogger<JobScraperExecutionService> logger)
+    {
+        _scopeFactory = scopeFactory;
+        _linkedInJobScraper = linkedInJobScraper;
+        _guypJobScraper = guypJobScraper;
+        _greenhouseJobScraper = greenhouseJobScraper;
+        _options = options;
+        _logger = logger;
+    }
+
+    public bool IsRunning => _executionLock.CurrentCount == 0;
+
+    public async Task<JobScraperExecutionReport?> ExecuteAsync(
+        JobScraperExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var lockAcquired = await _executionLock.WaitAsync(0, cancellationToken);
+        if (!lockAcquired)
+        {
+            return null;
+        }
+
+        var executionId = Guid.NewGuid();
+        var startedAtUtc = DateTime.UtcNow;
+        var errors = new List<string>();
+        var counters = new QueryExecutionCounters();
+
+        try
+        {
+            using var executionScope = _logger.BeginScope(new Dictionary<string, object>
+            {
+                ["executionId"] = executionId,
+                ["trigger"] = request.Trigger
+            });
+
+            _logger.LogInformation("Starting scraper execution with trigger {Trigger}", request.Trigger);
+
+            using var scope = _scopeFactory.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var queryContexts = await LoadQueryContextsAsync(dbContext, request, cancellationToken);
+            if (queryContexts.Count == 0)
+            {
+                _logger.LogInformation("No active user queries found to process");
+            }
+
+            foreach (var context in queryContexts)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                counters.TotalQueriesProcessed++;
+
+                using var queryScope = _logger.BeginScope(new Dictionary<string, object>
+                {
+                    ["queryId"] = context.SearchQueryId,
+                    ["userId"] = context.UserId
+                });
+
+                _logger.LogInformation("Processing query {QueryText} for user {UserId}",
+                    context.Query, context.UserId);
+
+                var queryState = new QueryState();
+
+                try
+                {
+                    // Gupy - limite por query
+                    await RunGuypQueryWithRetryAsync(
+                        context,
+                        job => SaveJobAsync(
+                            dbContext,
+                            context,
+                            queryState,
+                            counters,
+                            Platform.Gupy,
+                            job.Id,
+                            job.Title,
+                            job.Url,
+                            job.Description,
+                            cancellationToken),
+                        cancellationToken);
+
+                    // Greenhouse - limite por query
+                    await RunGreenhouseQueryWithRetryAsync(
+                        context,
+                        job => SaveJobAsync(
+                            dbContext,
+                            context,
+                            queryState,
+                            counters,
+                            Platform.Greenhouse,
+                            job.Id,
+                            job.Title,
+                            job.Url,
+                            job.Description,
+                            cancellationToken),
+                        cancellationToken);
+
+                    // LinkedIn - limite por query
+                    await RunLinkedInQueryWithRetryAsync(
+                        context,
+                        job => SaveJobAsync(
+                            dbContext,
+                            context,
+                            queryState,
+                            counters,
+                            Platform.LinkedIn,
+                            job.Id,
+                            job.Title,
+                            job.Url,
+                            job.Description,
+                            cancellationToken),
+                        cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    var message = $"Query {context.SearchQueryId} failed: {ex.Message}";
+                    errors.Add(message);
+                    _logger.LogError(ex, "Query processing failed");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"Fatal execution error: {ex.Message}");
+            _logger.LogError(ex, "Fatal scraper execution error");
+        }
+        finally
+        {
+            _executionLock.Release();
+        }
+
+        var finishedAtUtc = DateTime.UtcNow;
+        return new JobScraperExecutionReport(
+            executionId,
+            startedAtUtc,
+            finishedAtUtc,
+            counters.TotalQueriesProcessed,
+            counters.TotalJobsFound,
+            counters.TotalJobsSaved,
+            counters.TotalJobsSkipped,
+            errors);
+    }
+
+    private async Task<bool> SaveJobAsync(
+        AppDbContext dbContext,
+        QueryExecutionContext context,
+        QueryState queryState,
+        QueryExecutionCounters counters,
+        Platform platform,
+        string jobId,
+        string title,
+        string url,
+        string? description,
+        CancellationToken cancellationToken)
+    {
+        // Cria scope para acessar IJobRepository (Scoped)
+        using var scope = _scopeFactory.CreateScope();
+        var jobRepository = scope.ServiceProvider.GetRequiredService<IJobRepository>();
+        
+        cancellationToken.ThrowIfCancellationRequested();
+        counters.MarkFound();
+
+        using var jobScope = _logger.BeginScope(new Dictionary<string, object>
+        {
+            ["jobId"] = jobId
+        });
+
+        // Check per-query + platform limit (skipped jobs don't count)
+        var limit = platform switch
+        {
+            Platform.LinkedIn => _options.Value.MaxLinkedInJobsPerQuery,
+            Platform.Gupy => _options.Value.MaxGupyJobsPerQuery,
+            Platform.Greenhouse => _options.Value.MaxGreenhouseJobsPerQuery,
+            _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, null)
+        };
+
+        var canAdd = counters.TryAddJob(context.SearchQueryId, platform, limit);
+        if (!canAdd)
+        {
+            _logger.LogInformation(
+                "Limite de {Limit} vagas atingido para query '{QueryText}' na plataforma {Platform}. Parando esta query.",
+                limit, context.Query, platform);
+            return false;
+        }
+
+        // Check global execution limit (safety net)
+        if (counters.TotalJobsSaved >= _options.Value.MaxJobsPerExecution)
+        {
+            _logger.LogInformation("Execution global limit reached ({SavedCount}/{MaxCount}). Stopping scraping.",
+                counters.TotalJobsSaved, _options.Value.MaxJobsPerExecution);
+            return false;
+        }
+
+        var canSaveToday = await CanSaveTodayAsync(jobRepository, cancellationToken);
+        if (!canSaveToday)
+        {
+            _logger.LogInformation("Stopping query because daily limit was reached");
+            return false;
+        }
+
+        var existingJob = await jobRepository.GetByPlataformJobIdOrUrlAsync(jobId, url, cancellationToken);
+
+        if (existingJob is not null)
+        {
+            existingJob.Status = "skipped";
+            existingJob.LastModifiedBy = "job-scraper";
+            existingJob.LastModifiedAt = DateTime.UtcNow;
+            await jobRepository.UpdateAsync(existingJob, cancellationToken);
+            await jobRepository.SaveChangesAsync(cancellationToken);
+
+            counters.MarkSkipped();
+            _logger.LogInformation("Job skipped because it already exists");
+            return true; // Continua, mas nao conta no limite
+        }
+
+        if (context.ExcludeKeywords.Any(keyword =>
+                !string.IsNullOrWhiteSpace(keyword) &&
+                title.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+        {
+            counters.MarkSkipped();
+            _logger.LogInformation("Job skipped by excluded keyword");
+            return true; // Continua, mas nao conta no limite
+        }
+
+        var newJob = new Job
+        {
+            Id = Guid.NewGuid(),
+            PlataformJobId = jobId,
+            Title = title,
+            Description = description ?? string.Empty,
+            Url = url,
+            Status = "saved",
+            IsApplied = false,
+            Active = true,
+            CreatedBy = "job-scraper",
+            LastModifiedBy = "job-scraper",
+            CreatedAt = DateTime.UtcNow,
+            LastModifiedAt = DateTime.UtcNow
+        };
+
+        await jobRepository.AddAsync(newJob, cancellationToken);
+        await jobRepository.SaveChangesAsync(cancellationToken);
+
+        queryState.SavedCount++;
+        counters.MarkSaved();
+        _logger.LogInformation("Job saved successfully");
+        return true;
+    }
+
+    private async Task<List<QueryExecutionContext>> LoadQueryContextsAsync(
+        AppDbContext dbContext,
+        JobScraperExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var query =
+            from usq in dbContext.UserSearchQueries.AsNoTracking()
+            join sq in dbContext.SearchQueries.AsNoTracking() on usq.SearchQueryId equals sq.Id
+            where sq.Active
+            select new
+            {
+                usq.UserId,
+                usq.SearchQueryId,
+                sq.Query
+            };
+
+        if (request.UserId.HasValue)
+        {
+            query = query.Where(item => item.UserId == request.UserId.Value);
+        }
+
+        if (request.SearchQueryId.HasValue)
+        {
+            query = query.Where(item => item.SearchQueryId == request.SearchQueryId.Value);
+        }
+
+        var baseRows = await query.ToListAsync(cancellationToken);
+        if (baseRows.Count == 0)
+        {
+            return [];
+        }
+
+        var userIds = baseRows.Select(row => row.UserId).Distinct().ToList();
+        var preferences = await dbContext.Preferences.AsNoTracking()
+            .Where(p => userIds.Contains(p.UserId) && p.Active)
+            .ToListAsync(cancellationToken);
+
+        var contexts = new List<QueryExecutionContext>(baseRows.Count);
+        foreach (var row in baseRows)
+        {
+            var preference = preferences.FirstOrDefault(item => item.UserId == row.UserId);
+            contexts.Add(new QueryExecutionContext(
+                row.UserId,
+                row.SearchQueryId,
+                row.Query,
+                preference?.ExcludeKeywords ?? [],
+                preference?.Location ?? string.Empty));
+        }
+
+        return contexts;
+    }
+
+    private async Task RunLinkedInQueryWithRetryAsync(
+        QueryExecutionContext context,
+        Func<LinkedInScrapedJob, Task<bool>> onJob,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt <= _options.Value.RetryCount; attempt++)
+        {
+            try
+            {
+                await _linkedInJobScraper.StreamJobsAsync(
+                    context.Query,
+                    context.Location,
+                    ParseLiAtCookie(_options.Value.LiAtCookie),
+                    _options.Value.EasyApplyOnly,
+                    onJob,
+                    cancellationToken);
+
+                return;
+            }
+            catch (Exception ex) when (ex is TimeoutException or PlaywrightException)
+            {
+                if (attempt >= _options.Value.RetryCount)
+                {
+                    await SaveFailureScreenshotAsync(context.SearchQueryId, cancellationToken);
+                    throw;
+                }
+
+                var delay = _options.Value.RetryBaseDelayMs * (int)Math.Pow(2, attempt);
+                _logger.LogWarning(
+                    ex,
+                    "Transient failure while scraping LinkedIn query {SearchQueryId}. Retry attempt {Attempt}",
+                    context.SearchQueryId,
+                    attempt + 1);
+
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    private async Task RunGuypQueryWithRetryAsync(
+        QueryExecutionContext context,
+        Func<GuypScrapedJob, Task<bool>> onJob,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt <= _options.Value.RetryCount; attempt++)
+        {
+            try
+            {
+                await _guypJobScraper.StreamJobsAsync(
+                    context.Query,
+                    context.Location,
+                    onJob,
+                    cancellationToken);
+
+                return;
+            }
+            catch (Exception ex) when (ex is TimeoutException or PlaywrightException)
+            {
+                if (attempt >= _options.Value.RetryCount)
+                {
+                    await SaveFailureScreenshotAsync(context.SearchQueryId, cancellationToken);
+                    throw;
+                }
+
+                var delay = _options.Value.RetryBaseDelayMs * (int)Math.Pow(2, attempt);
+                _logger.LogWarning(
+                    ex,
+                    "Transient failure while scraping Gupy query {SearchQueryId}. Retry attempt {Attempt}",
+                    context.SearchQueryId,
+                    attempt + 1);
+
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    private async Task RunGreenhouseQueryWithRetryAsync(
+        QueryExecutionContext context,
+        Func<GreenhouseScrapedJob, Task<bool>> onJob,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt <= _options.Value.RetryCount; attempt++)
+        {
+            try
+            {
+                await _greenhouseJobScraper.StreamJobsAsync(
+                    context.Query,
+                    context.Location,
+                    onJob,
+                    cancellationToken);
+
+                return;
+            }
+            catch (Exception ex) when (ex is TimeoutException or HttpRequestException or TaskCanceledException)
+            {
+                if (attempt >= _options.Value.RetryCount)
+                {
+                    await SaveFailureScreenshotAsync(context.SearchQueryId, cancellationToken);
+                    throw;
+                }
+
+                var delay = _options.Value.RetryBaseDelayMs * (int)Math.Pow(2, attempt);
+                _logger.LogWarning(
+                    ex,
+                    "Transient failure while scraping Greenhouse query {SearchQueryId}. Retry attempt {Attempt}",
+                    context.SearchQueryId,
+                    attempt + 1);
+
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    private async Task<bool> CanSaveTodayAsync(IJobRepository jobRepository, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var dayStart = new DateTime(now.Year, now.Month, now.Day, 0, 0, 0, DateTimeKind.Utc);
+        var nextDay = dayStart.AddDays(1);
+
+        var count = await jobRepository.CountJobsCreatedTodayAsync(dayStart, nextDay, cancellationToken);
+
+        return count < _options.Value.MaxApplicationsPerDay;
+    }
+
+    private async Task SaveFailureScreenshotAsync(Guid searchQueryId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var pathRoot = Path.IsPathRooted(_options.Value.ScreenshotsPath)
+                ? _options.Value.ScreenshotsPath
+                : Path.Combine(AppContext.BaseDirectory, _options.Value.ScreenshotsPath);
+
+            Directory.CreateDirectory(pathRoot);
+
+            using var playwright = await Playwright.CreateAsync();
+            await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = true,
+                Args = new[]
+                {
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox"
+                }
+            });
+
+            await using var context = await browser.NewContextAsync();
+            var page = await context.NewPageAsync();
+            await page.GotoAsync("about:blank");
+
+            var fileName = $"scraper-fatal-{searchQueryId:N}-{DateTime.UtcNow:yyyyMMddHHmmss}.png";
+            var fullPath = Path.Combine(pathRoot, fileName);
+
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = fullPath,
+                FullPage = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not save fatal screenshot for query {SearchQueryId}", searchQueryId);
+        }
+    }
+
+    private static string? ParseLiAtCookie(string? configuredValue)
+    {
+        if (string.IsNullOrWhiteSpace(configuredValue))
+        {
+            return null;
+        }
+
+        var trimmed = configuredValue.Trim();
+
+        const string cookiePrefix = "li_at=";
+        var index = trimmed.IndexOf(cookiePrefix, StringComparison.OrdinalIgnoreCase);
+        if (index >= 0)
+        {
+            var valueStart = index + cookiePrefix.Length;
+            var tail = trimmed[valueStart..];
+            var end = tail.IndexOf(';');
+            return (end >= 0 ? tail[..end] : tail).Trim();
+        }
+
+        return trimmed;
+    }
+
+    private sealed record QueryExecutionContext(
+        Guid UserId,
+        Guid SearchQueryId,
+        string Query,
+        string[] ExcludeKeywords,
+        string Location);
+
+    private sealed class QueryState
+    {
+        public int SavedCount { get; set; }
+    }
+
+    private sealed class ExecutionCounters
+    {
+        public int TotalQueriesProcessed { get; set; }
+        public int TotalJobsFound { get; set; }
+        public int TotalJobsSaved { get; set; }
+        public int TotalJobsSkipped { get; set; }
+    }
+}

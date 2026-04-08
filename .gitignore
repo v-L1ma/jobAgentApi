@@ -1,2 +1,4 @@
 bin/
 obj/
+src/WebApi/appsettings.Development.json
+src/WebApi/appsettings.json

@@ -1,4 +1,5 @@
 using jobAgentApi.Application.Repositories;
+using jobAgentApi.Domain.Entities;
 using jobAgentApi.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -8,12 +9,19 @@ namespace jobAgentApi.Infrastructure.Repositories
     public sealed class UnitOfWork : IUnitOfWork
     {
         private readonly AppDbContext _dbContext;
+        private readonly IUserRepository _userRepository;
+        private readonly IJobRepository _jobRepository;
         private readonly Dictionary<Type, object> _repositories = new();
         private IDbContextTransaction? _currentTransaction;
 
-        public UnitOfWork(AppDbContext dbContext)
+        public UnitOfWork(
+            AppDbContext dbContext, 
+            IUserRepository userRepository,
+            IJobRepository jobRepository)
         {
             _dbContext = dbContext;
+            _userRepository = userRepository;
+            _jobRepository = jobRepository;
         }
 
         public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -57,8 +65,23 @@ namespace jobAgentApi.Infrastructure.Repositories
             _currentTransaction = null;
         }
 
+        public IUserRepository GetUserRepository()
+        {
+            return _userRepository;
+        }
+
+        public IJobRepository GetJobRepository()
+        {
+            return _jobRepository;
+        }
+
         public IRepositoryBase<T> GetRepository<T>() where T : class
         {
+            if (typeof(T) == typeof(ApplicationUser))
+            {
+                return (IRepositoryBase<T>)_userRepository;
+            }
+
             var type = typeof(T);
 
             if (_repositories.TryGetValue(type, out var repository))
@@ -83,7 +106,7 @@ namespace jobAgentApi.Infrastructure.Repositories
             _dbSet = dbContext.Set<T>();
         }
 
-        public Task<T> GetByIdAsync(int id)
+        public Task<T?> GetByIdAsync(int id)
         {
             return _dbSet.FindAsync(id).AsTask();
         }
@@ -98,26 +121,38 @@ namespace jobAgentApi.Infrastructure.Repositories
             return await _dbSet.FindAsync(id) != null;
         }
 
-        public Task AddAsync(T entity)
+        public async Task<bool> AddAsync(T entity)
         {
-            return _dbSet.AddAsync(entity).AsTask();
+            await _dbSet.AddAsync(entity);
+            return true;
         }
 
-        public Task UpdateAsync(T entity)
+        public Task<bool> UpdateAsync(T entity)
         {
             _dbSet.Update(entity);
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
-        public Task DeleteAsync(T entity)
+        public Task<bool> DeleteAsync(T entity)
         {
             _dbSet.Remove(entity);
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
         public Task SaveChangesAsync()
         {
             return _dbContext.SaveChangesAsync();
         }
+
+        public async Task<T?> GetByIdAsync(Guid id)
+        {
+            return await _dbSet.FindAsync(id);
+        }
+
+        public async Task<bool> ExistsAsync(Guid id)
+        {
+            return await _dbSet.FindAsync(id) != null;
+        }
+
     }
 }

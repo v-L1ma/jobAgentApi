@@ -1,8 +1,9 @@
 using jobAgentApi.Application.Abstractions;
 using jobAgentApi.Application.Abstractions.Messaging;
 using jobAgentApi.Application.Repositories;
+using jobAgentApi.Domain.Entities;
 
-namespace jobAgentApi.Application.Features.Auth.Commands
+namespace jobAgentApi.Application.Features.Auth.Commands.Login
 {
     public sealed class LoginCommandHandler : ICommandHandler<LoginCommand, LoginCommandResponse>
     {
@@ -26,7 +27,26 @@ namespace jobAgentApi.Application.Features.Auth.Commands
                 throw new DomainException("Por favor informe uma Senha");
             }
 
-            
+            var userRepository = _unitOfWork.GetUserRepository();
+
+            ApplicationUser? user = await userRepository.GetByEmailAsync(request.Email);
+
+            if (user is null)
+            {
+                throw new DomainException("Email e/ou senha inválidos");
+            }
+
+            var validPassword = await userRepository.CheckPasswordAsync(user, request.Password);
+
+            if (!validPassword)
+            {
+                throw new DomainException("Email e/ou senha inválidos");
+            }
+
+            var token = _tokenService.GenerateToken(user);
+            var refreshToken = _tokenService.GenerateRefreshToken(user);
+
+            return new LoginCommandResponse(token, refreshToken);
         }
     }
 }

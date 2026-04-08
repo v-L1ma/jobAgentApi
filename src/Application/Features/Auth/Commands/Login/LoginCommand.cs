@@ -1,6 +1,6 @@
 using jobAgentApi.Application.Abstractions.Messaging;
 
-namespace jobAgentApi.Application.Features.Auth.Commands
+namespace jobAgentApi.Application.Features.Auth.Commands.Login
 {
     public record LoginCommand(string Email, string Password) : ICommand<LoginCommandResponse>;
 }

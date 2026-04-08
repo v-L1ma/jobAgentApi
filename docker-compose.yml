@@ -1,23 +1,4 @@
-version: '3.9'
-
 services:
-
-  postgres:
-    image: postgres:16-alpine
-    container_name: jobagentapi_postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: jobagentapi
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   api:
     build:
@@ -28,11 +9,10 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - ASPNETCORE_URLS=http://+:80
-      - ConnectionStrings__DefaultConnection=Server=postgres;Port=5432;Database=jobagentapi;User Id=postgres;Password=postgres;
-    depends_on:
-      postgres:
-        condition: service_healthy
-
+      - ConnectionStrings__DefaultConnection=Host=host.docker.internal;Port=5432;Database=jobAgent;Username=postgres;Password=admin;
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      
   prometheus:
     image: prom/prometheus
     volumes:

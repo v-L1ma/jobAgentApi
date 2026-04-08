@@ -81,5 +81,22 @@ public class TokenService : ITokenService
 
         return validToken.IsValid;
     }
+
+    public ClaimsPrincipal? GetPrincipalFromExpiredToken(string token)
+    {
+        var tokenValidationParameters = TokenHelpers.GetTokenValidationParameters(_configuration);
+        tokenValidationParameters.ValidateLifetime = false; // Permite ler tokens expirados
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var principal = tokenHandler.ValidateToken(token, tokenValidationParameters, out var securityToken);
+
+        if (securityToken is not JwtSecurityToken jwtSecurityToken || 
+            !jwtSecurityToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.InvariantCultureIgnoreCase))
+        {
+            return null;
+        }
+
+        return principal;
+    }
 	
 }
