@@ -99,14 +99,8 @@ internal sealed class JobRepository : IJobRepository
 
         var hasUserFilter = userId.HasValue && userId.Value != Guid.Empty;
 
-        // Base FROM + JOIN condicional
+        // Base FROM
         var fromSql = @"FROM ""Jobs"" j";
-        if (hasUserFilter)
-        {
-            fromSql += $@" INNER JOIN ""UserPreferences"" up ON up.""UserId"" = @p{paramIndex}";
-            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", userId.Value));
-            paramIndex++;
-        }
 
         // Cláusulas WHERE
         var whereParts = new List<string>();
@@ -125,9 +119,36 @@ internal sealed class JobRepository : IJobRepository
             paramIndex++;
         }
 
+        // Filtra por match nas keywords da search query do usuário
         if (hasUserFilter)
         {
-            whereParts.Add($@"(j.""Title"" ILIKE '%' || up.""Level"" || '%' OR j.""Description"" ILIKE '%' || up.""Level"" || '%')");
+            var userFilterId = userId!.Value;
+
+            // Só aplica filtro de keyword se o usuário tiver keywords válidas.
+            // Caso não tenha, esse bloco vira verdadeiro e não bloqueia o retorno de vagas.
+            whereParts.Add($@"(
+                NOT EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND sq.""Keywords"" IS NOT NULL
+                      AND array_length(sq.""Keywords"", 1) > 0
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    INNER JOIN LATERAL unnest(sq.""Keywords"") AS kw ON TRUE
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND (
+                          j.""Title"" ILIKE '%' || kw || '%'
+                          OR j.""Description"" ILIKE '%' || kw || '%'
+                      )
+                )
+            )");
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", userFilterId));
+            paramIndex++;
         }
 
         var whereSql = whereParts.Count > 0 ? " WHERE " + string.Join(" AND ", whereParts) : string.Empty;

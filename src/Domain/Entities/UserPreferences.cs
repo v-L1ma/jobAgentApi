@@ -15,6 +15,7 @@ public class SearchQuery : AuditableEntity
     public string Level { get; set; } = string.Empty;
     public string Area { get; set; } = string.Empty;
     public string NormalizedHash { get; set; } = string.Empty;
+    public DateTime LastExecutedAt { get; set; } = DateTime.UtcNow;
 }
 
 public class UserSearchQuery

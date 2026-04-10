@@ -66,9 +66,9 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
 
                 if (report != null)
                 {
-                    // Busca as vagas coletadas e salva no cache
+                    // Busca as vagas coletadas (jobs mais recentes salvas durante o scraping)
                     var jobs = await FetchJobsForQueryAsync(dbContext, stoppingToken);
-                    
+
                     var cachedJobs = jobs.Select(j => new CachedJobItem(
                         j.Id,
                         j.Title,
@@ -81,6 +81,7 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
                         DateTime.UtcNow,
                         IsComplete: true);
 
+                    // Salva no cache usando a NormalizedQuery do request
                     await _cacheService.SetCachedResultAsync(request.NormalizedQuery, cacheResult, stoppingToken);
 
                     _logger.LogInformation(
@@ -111,17 +112,30 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
         ScrapingQueueRequest request,
         CancellationToken cancellationToken)
     {
-        // Encontra o SearchQuery correspondente
+        // Se temos SearchQueryId, usa diretamente
+        if (request.SearchQueryId.HasValue)
+        {
+            _logger.LogInformation(
+                "Executando scraping com SearchQueryId '{SearchQueryId}' para UserId '{UserId}'",
+                request.SearchQueryId.Value,
+                request.UserId);
+
+            return await executionService.ExecuteAsync(
+                new JobScraperExecutionRequest("queue", request.UserId, request.SearchQueryId.Value),
+                cancellationToken);
+        }
+
+        // Fallback: busca pela NormalizedQuery (cenários legados)
         var searchQuery = await dbContext.SearchQueries
+            .AsNoTracking()
             .FirstOrDefaultAsync(sq => sq.Query.ToLower().Trim() == request.NormalizedQuery.ToLower().Trim(), cancellationToken);
 
         if (searchQuery == null)
         {
-            _logger.LogWarning("SearchQuery not found for normalized query '{Query}'", request.NormalizedQuery);
+            _logger.LogWarning("SearchQuery não encontrada para normalized query '{Query}'", request.NormalizedQuery);
             return null;
         }
 
-        // Se temos UserId, executa com contexto do usuário
         if (request.UserId.HasValue)
         {
             return await executionService.ExecuteAsync(
@@ -129,7 +143,6 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
                 cancellationToken);
         }
 
-        // Caso contrário, executa apenas para esta query
         return await executionService.ExecuteAsync(
             new JobScraperExecutionRequest("queue", SearchQueryId: searchQuery.Id),
             cancellationToken);

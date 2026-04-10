@@ -55,6 +55,7 @@ public static class DependencyInjection
                 services.AddScoped<IJobRepository, JobRepository>();
                 services.AddScoped<IUserRepository, Repositories.UserRepository>();
                 services.AddScoped<IUserSearchQueryRepository, UserSearchQueryRepository>();
+                services.AddScoped<IStatisticsRepository, StatisticsRepository>();
                 services.AddScoped<IUnitOfWork, Repositories.UnitOfWork>();
                 services.AddSingleton<ITokenService, TokenService>();
                 services.AddSingleton<IKeywordNormalizer, KeywordNormalizer>();

@@ -14,17 +14,22 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
 {
     private readonly IUnitOfWork _unitOfWork;
     private readonly ISearchQueryService _searchQueryService;
+    private readonly IUserSearchQueryRepository _userSearchQueryRepository;
 
-    public SavePreferencesCommandHandler(IUnitOfWork unitOfWork, ISearchQueryService searchQueryService)
+    public SavePreferencesCommandHandler(
+        IUnitOfWork unitOfWork, 
+        ISearchQueryService searchQueryService,
+        IUserSearchQueryRepository userSearchQueryRepository)
     {
         _unitOfWork = unitOfWork;
         _searchQueryService = searchQueryService;
+        _userSearchQueryRepository = userSearchQueryRepository;
     }
 
     public async Task<Guid> Handle(SavePreferencesCommand request, CancellationToken cancellationToken)
     {
         var preferencesRepository = _unitOfWork.GetRepository<UserPreferences>();
-        
+
         var allPreferences = await preferencesRepository.GetAllAsync();
         var existingPreferences = allPreferences.FirstOrDefault(p => p.UserId == request.UserId);
 
@@ -71,26 +76,38 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
 
         var queryStr = string.Join(" AND ", queryParts);
 
+        // Fase: Garantir que o usuário tenha apenas UMA search query
+        var userSearchQueryRepository = _unitOfWork.GetRepository<UserSearchQuery>();
+        var currentSearchQueryId = await _userSearchQueryRepository.GetUserCurrentSearchQueryIdAsync(request.UserId, cancellationToken);
+
+        // Se o usuário já tem uma query, verificar se precisa ser removido dela
+        if (currentSearchQueryId.HasValue)
+        {
+            // Verifica quantos usuários estão usando a query atual
+            var usersCount = await _userSearchQueryRepository.GetUsersCountBySearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
+
+            // Remove o usuário da query atual
+            await _userSearchQueryRepository.RemoveUserFromSearchQueryAsync(request.UserId, currentSearchQueryId.Value, cancellationToken);
+
+            // Se não há outros usuários usando essa query, deleta ela
+            if (usersCount <= 1) // <= 1 porque o usuário atual ainda está contando
+            {
+                await _userSearchQueryRepository.DeleteOrphanSearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
+            }
+        }
+
         // Phase 4 & 6: Fluxo completo -> normaliza, busca, tenta match, cria ou reutiliza
         var resultQuery = await _searchQueryService.ProcessQueryAsync(queryStr, skillsToProcess, request.Level, request.Area);
 
-        // Phase 5: Task 11 / Task 12 - Relacionar usuário sem duplicidade
+        // Relacionar usuário à nova query (sempre será uma nova associação)
         if (resultQuery != null)
         {
-            var userSearchQueryRepository = _unitOfWork.GetRepository<UserSearchQuery>();
-            var allUserSearchQueries = await userSearchQueryRepository.GetAllAsync();
-            
-            var alreadyLinked = allUserSearchQueries.Any(usq => usq.UserId == request.UserId && usq.SearchQueryId == resultQuery.Id);
-
-            if (!alreadyLinked)
+            await userSearchQueryRepository.AddAsync(new UserSearchQuery
             {
-                await userSearchQueryRepository.AddAsync(new UserSearchQuery
-                {
-                    UserId = request.UserId,
-                    SearchQueryId = resultQuery.Id,
-                    CreatedAt = DateTime.UtcNow
-                });
-            }
+                UserId = request.UserId,
+                SearchQueryId = resultQuery.Id,
+                CreatedAt = DateTime.UtcNow
+            });
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
