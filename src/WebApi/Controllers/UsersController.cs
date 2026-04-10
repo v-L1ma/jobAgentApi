@@ -1,9 +1,15 @@
 using System.Security.Claims;
+using System.Globalization;
 using jobAgentApi.Application.Features.User.Commands.GenerateCv;
 using jobAgentApi.Application.Features.User.Commands.UploadCv;
 using jobAgentApi.Application.Features.User.Commands.SavePreferences;
 using jobAgentApi.Application.Features.User.Queries.GetPreferences;
 using jobAgentApi.Application.Features.User.Queries.GetUserStatistics;
+using jobAgentApi.Application.Features.User.Queries.GetUserCv;
+using jobAgentApi.Application.Features.User.Queries.GetGeneratedCvs;
+using jobAgentApi.Application.Abstractions.Messaging;
+using jobAgentApi.Application.Repositories;
+using jobAgentApi.Domain.Entities;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -17,10 +23,12 @@ namespace jobAgentApi.WebApi.Controllers;
 public class UsersController : ControllerBase
 {
     private readonly ISender _sender;
+    private readonly IUnitOfWork _unitOfWork;
 
-    public UsersController(ISender sender)
+    public UsersController(ISender sender, IUnitOfWork unitOfWork)
     {
         _sender = sender;
+        _unitOfWork = unitOfWork;
     }
 
     [HttpPost("preferences")]
@@ -70,7 +78,7 @@ public class UsersController : ControllerBase
         }
 
         var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
-        
+
         if (!Guid.TryParse(userIdString, out var userId))
         {
             return Unauthorized("Usuário inválido.");
@@ -78,10 +86,103 @@ public class UsersController : ControllerBase
 
         using var stream = file.OpenReadStream();
         var command = new UploadCvCommand(stream, file.FileName, file.ContentType, userId);
-        
+
         var result = await _sender.Send(command);
 
         return Ok(new { Url = result });
+    }
+
+    /// <summary>
+    /// Obtém o currículo armazenado do usuário autenticado para visualização.
+    /// Retorna o PDF do currículo gerado a partir dos dados armazenados.
+    /// </summary>
+    [HttpGet("cv")]
+    [ProducesResponseType(typeof(FileResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetUserCv()
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+
+        if (!Guid.TryParse(userIdString, out var userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var query = new GetUserCvQuery(userId);
+        var result = await _sender.Send(query);
+
+        if (!result.HasCv)
+        {
+            return NotFound("Nenhum currículo encontrado para este usuário.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.FileName))
+        {
+            Response.Headers.Append("X-Cv-File-Name", result.FileName);
+        }
+
+        if (result.UploadedAtUtc.HasValue)
+        {
+            Response.Headers.Append("X-Cv-Upload-Date", result.UploadedAtUtc.Value.ToString("O"));
+        }
+
+        if (result.FileSizeBytes.HasValue)
+        {
+            Response.Headers.Append("X-Cv-File-Size-Bytes", result.FileSizeBytes.Value.ToString(CultureInfo.InvariantCulture));
+        }
+
+        Response.Headers.Append("Access-Control-Expose-Headers", "X-Cv-File-Name,X-Cv-Upload-Date,X-Cv-File-Size-Bytes");
+
+        return File(result.PdfBytes!, "application/pdf", result.FileName!);
+    }
+
+    /// <summary>
+    /// Lista todos os currículos gerados para o usuário autenticado.
+    /// </summary>
+    [HttpGet("generated-cvs")]
+    [ProducesResponseType(typeof(GetGeneratedCvsResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetGeneratedCvs()
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+
+        if (!Guid.TryParse(userIdString, out var userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var query = new GetGeneratedCvsQuery(userId);
+        var result = await _sender.Send(query);
+
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// Obtém um currículo gerado específico para download.
+    /// </summary>
+    [HttpGet("generated-cvs/{id:guid}")]
+    [ProducesResponseType(typeof(FileResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetGeneratedCvById(Guid id)
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+
+        if (!Guid.TryParse(userIdString, out var userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var generatedCvRepository = _unitOfWork.GetRepository<GeneratedCv>();
+        var allGeneratedCvs = await generatedCvRepository.GetAllAsync();
+        var generatedCv = allGeneratedCvs.FirstOrDefault(cv => cv.Id == id && cv.UserId == userId && cv.Active);
+
+        if (generatedCv is null)
+        {
+            return NotFound("Currículo gerado não encontrado.");
+        }
+
+        // Note: For now we return a redirect to the stored URL
+        // In a real scenario, you might fetch the file from storage and return it directly
+        return Redirect(generatedCv.UrlFile);
     }
 
     [HttpPost("cv/generate")]
