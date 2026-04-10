@@ -58,7 +58,10 @@ public class SearchQueryService : ISearchQueryService
             Keywords = orderedKeywords, // Usando as ordenadas para consistência
             Level = level,
             Area = area,
-            NormalizedHash = normalizedHash
+            NormalizedHash = normalizedHash,
+            Active = true,
+            CreatedAt = DateTime.UtcNow,
+            LastModifiedAt = DateTime.UtcNow
         };
 
         await repository.AddAsync(newSearchQuery);
