@@ -12,7 +12,6 @@ using jobAgentApi.Infrastructure.Services;
 using jobAgentApi.Infrastructure.Utils;
 using jobAgentApi.Infrastructure.Services.JobScraper;
 using jobAgentApi.Infrastructure.Repositories;
-using jobAgentApi.Infrastructure.Services.Cache;
 using jobAgentApi.Infrastructure.Services.JobScraperQueue;
 using jobAgentApi.Application;
 
@@ -41,13 +40,6 @@ public static class DependencyInjection
                         .AddDefaultTokenProviders();
 
                 services.AddAutoMapper(typeof(DependencyInjection).Assembly);
-
-                // Memory Cache para resultados de busca
-                services.AddMemoryCache();
-
-                // Job Cache Service
-                services.Configure<JobCacheOptions>(configuration.GetSection(JobCacheOptions.SectionName));
-                services.AddSingleton<IJobCacheService, JobCacheService>();
 
                 // Job Scraping Queue Service
                 services.AddSingleton<IJobScrapingQueueService, JobScrapingQueueService>();
