@@ -7,18 +7,15 @@ namespace jobAgentApi.Application.Features.Jobs.Queries.GetJobsAsync;
 
 public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, JobSearchResponse>
 {
-    private readonly IJobCacheService _cacheService;
     private readonly IJobScrapingQueueService _queueService;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IUserSearchQueryRepository _userSearchQueryRepository;
 
     public GetJobsAsyncQueryHandler(
-        IJobCacheService cacheService,
         IJobScrapingQueueService queueService,
         IUnitOfWork unitOfWork,
         IUserSearchQueryRepository userSearchQueryRepository)
     {
-        _cacheService = cacheService;
         _queueService = queueService;
         _unitOfWork = unitOfWork;
         _userSearchQueryRepository = userSearchQueryRepository;
@@ -41,19 +38,18 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
             userSearchQuery = await _userSearchQueryRepository.GetUserCurrentSearchQueryAsync(request.UserId.Value, cancellationToken);
         }
 
-        // Se encontrou queries do usuário, usa a primeira para cache e scraping
-        var queryForCache = userQueryTexts.FirstOrDefault();
-        var normalizedQuery = !string.IsNullOrEmpty(queryForCache)
-            ? NormalizeQuery(queryForCache)
+        // Se encontrou queries do usuário, usa a primeira para scraping
+        var queryForScraping = userQueryTexts.FirstOrDefault();
+        var normalizedQuery = !string.IsNullOrEmpty(queryForScraping)
+            ? NormalizeQuery(queryForScraping)
             : NormalizeQuery(request.Query);
 
-        // caso seja uma página além da primeira, busca diretamente do banco sem considerar cache ou scraping
+        // caso seja uma página além da primeira, busca diretamente do banco sem considerar scraping
         if (request.Page > 1)
         {
             var jobRepositoryPaged = _unitOfWork.GetJobRepository();
             var (jobsPaged, totalCountPaged) = await jobRepositoryPaged.GetPagedAsync(
-                request.Stack,
-                request.Location,
+                request.Query,
                 request.UserId,
                 request.Page,
                 request.PageSize,
@@ -79,40 +75,10 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
                     TotalPages: totalPagesPaged));
         }
 
-        // Cache e scraping só devem ser ativados para a primeira página (page == 1)
+        // Scraping só deve ser ativado para a primeira página (page == 1)
         // Para páginas seguintes, busca-se diretamente do banco (ver bloco acima)
 
-        // 1. Verifica se existe cache
-        // if (!string.IsNullOrEmpty(normalizedQuery))
-        // {
-        //     var cachedResult = await _cacheService.GetCachedResultAsync(normalizedQuery, cancellationToken);
-
-        //     if (cachedResult != null)
-        //     {
-        //         // Cache HIT - retorna imediatamente
-        //         var items = cachedResult.Jobs.Select(j => new JobItemResponse(
-        //             j.Id,
-        //             j.Title,
-        //             j.Description,
-        //             j.Url,
-        //             j.IsApplied)).ToList();
-
-        //         return new JobSearchResponse(
-        //             Status: "complete",
-        //             IsLoading: false,
-        //             Data: items,
-        //             Meta: new JobSearchMeta(
-        //                 ScraperRunning: false,
-        //                 FromCache: true,
-        //                 TotalItems: items.Count,
-        //                 CurrentPage: request.Page,
-        //                 TotalPages: 1));
-        //     }
-        // }
-
-        // Cache MISS - a partir daqui, sempre busca do banco
-
-        // 2. Verifica se a última execução foi há menos de 15 minutos
+        // 1. Verifica se a última execução foi há menos de 15 minutos
         var canRunScraper = true;
         if (userSearchQuery != null)
         {
@@ -124,7 +90,7 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
             }
         }
 
-        // 3. Se pode rodar scraper, verifica se já está em execução ou enfileira
+        // 2. Se pode rodar scraper, verifica se já está em execução ou enfileira
         var scraperRunning = false;
         Guid? requestId = null;
 
@@ -153,11 +119,10 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
             }
         }
 
-        // 4. Busca vagas do banco de dados (sempre executa quando cache miss)
+        // 3. Busca vagas do banco de dados
         var jobRepository = _unitOfWork.GetJobRepository();
         var (jobs, totalCount) = await jobRepository.GetPagedAsync(
-            request.Stack,
-            request.Location,
+            request.Query,
             request.UserId,
             request.Page,
             request.PageSize,

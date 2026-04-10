@@ -22,8 +22,8 @@ public class JobsController : ControllerBase
     }
 
     /// <summary>
-    /// Busca vagas com scraping assíncrono, cache e polling.
-    /// Retorna status parcial quando os dados não estão em cache.
+    /// Busca vagas com scraping assíncrono e polling.
+    /// Retorna status parcial quando o scraping ainda está em andamento.
     /// </summary>
     [HttpGet("search")]
     [ProducesResponseType(typeof(JobSearchResponse), StatusCodes.Status200OK)]
@@ -36,8 +36,16 @@ public class JobsController : ControllerBase
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
         Guid.TryParse(userIdStr, out Guid userId);
+
+        var combinedQuery = string.Join(
+            " ",
+            new[] { query, stack, location }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim()));
+
+        var effectiveQuery = string.IsNullOrWhiteSpace(combinedQuery) ? null : combinedQuery;
         
-        var searchQuery = new GetJobsAsyncQuery(query, stack, location, page, pageSize, userId);
+        var searchQuery = new GetJobsAsyncQuery(effectiveQuery, page, pageSize, userId);
         var result = await _sender.Send(searchQuery);
         return Ok(result);
     }

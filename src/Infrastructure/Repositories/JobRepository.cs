@@ -86,8 +86,7 @@ internal sealed class JobRepository : IJobRepository
     }
 
     public async Task<(List<Job> Items, int TotalCount)> GetPagedAsync(
-        string? stack,
-        string? location,
+        string? query,
         Guid? userId,
         int page,
         int pageSize,
@@ -105,17 +104,10 @@ internal sealed class JobRepository : IJobRepository
         // Cláusulas WHERE
         var whereParts = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(stack))
+        if (!string.IsNullOrWhiteSpace(query))
         {
             whereParts.Add($@"(j.""Title"" ILIKE @p{paramIndex} OR j.""Description"" ILIKE @p{paramIndex})");
-            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{stack}%"));
-            paramIndex++;
-        }
-
-        if (!string.IsNullOrWhiteSpace(location))
-        {
-            whereParts.Add($@"j.""Description"" ILIKE @p{paramIndex}");
-            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{location}%"));
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{query}%"));
             paramIndex++;
         }
 
@@ -165,6 +157,22 @@ internal sealed class JobRepository : IJobRepository
         var dataSql = $@"SELECT {columns} {fromSql}{whereSql} ORDER BY j.""CreatedAt"" DESC LIMIT @p{paramIndex} OFFSET @p{paramIndex + 1}";
         parameters.Add(new NpgsqlParameter($"@p{paramIndex}", pageSize));
         parameters.Add(new NpgsqlParameter($"@p{paramIndex + 1}", (page - 1) * pageSize));
+
+        Console.WriteLine("================================================");
+        Console.WriteLine("================================================");
+        Console.WriteLine("================================================");
+        Console.WriteLine("================================================");
+        Console.WriteLine("SQL Gerada:");
+        Console.WriteLine(dataSql);
+        Console.WriteLine("Parâmetros:");
+        foreach (var param in parameters)        {
+            Console.WriteLine($"{param.ParameterName}: {param.Value}");
+        }
+        Console.WriteLine("================================================");
+        Console.WriteLine("================================================");
+        Console.WriteLine("================================================");
+        Console.WriteLine("================================================");
+
 
         try
         {

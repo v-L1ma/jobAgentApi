@@ -31,9 +31,16 @@ public sealed class GetJobsQueryHandler : IQueryHandler<GetJobsQuery, PagedJobsR
 
         var jobRepository = _unitOfWork.GetJobRepository();
 
+        var combinedQuery = string.Join(
+            " ",
+            new[] { request.Stack, request.Location }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim()));
+
+        var query = string.IsNullOrWhiteSpace(combinedQuery) ? null : combinedQuery;
+
         var (items, totalCount) = await jobRepository.GetPagedAsync(
-            request.Stack,
-            request.Location,
+            query,
             request.UserId,
             request.Page,
             request.PageSize,

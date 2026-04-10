@@ -4,8 +4,6 @@ namespace jobAgentApi.Application.Features.Jobs.Queries.GetJobsAsync;
 
 public sealed record GetJobsAsyncQuery(
     string? Query = null,
-    string? Stack = null,
-    string? Location = null,
     int Page = 1,
     int PageSize = 10,
     Guid? UserId = null) : IQuery<JobSearchResponse>;
