@@ -3,6 +3,7 @@ using jobAgentApi.Application.Features.User.Commands.GenerateCv;
 using jobAgentApi.Application.Features.User.Commands.UploadCv;
 using jobAgentApi.Application.Features.User.Commands.SavePreferences;
 using jobAgentApi.Application.Features.User.Queries.GetPreferences;
+using jobAgentApi.Application.Features.User.Queries.GetUserStatistics;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -114,6 +115,27 @@ public class UsersController : ControllerBase
         var command = new EvaluateCvCommand(id, userId, dto.Liked, dto.Feedback);
         await _sender.Send(command);
         return Ok();
+    }
+
+    /// <summary>
+    /// Busca estatísticas detalhadas do usuário sobre candidaturas.
+    /// Inclui visão geral, distribuição por status, plataforma e candidaturas por dia.
+    /// </summary>
+    [HttpGet("statistics")]
+    [ProducesResponseType(typeof(UserStatisticsResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetUserStatistics()
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+        
+        if (!Guid.TryParse(userIdStr, out Guid userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var query = new GetUserStatisticsQuery(userId);
+        var result = await _sender.Send(query);
+
+        return Ok(result);
     }
 }
 
