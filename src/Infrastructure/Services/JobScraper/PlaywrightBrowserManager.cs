@@ -31,18 +31,42 @@ internal sealed class PlaywrightBrowserManager : IPlaywrightBrowserManager
 
     public async Task<IBrowserContext> GetOrCreateContextAsync(string contextName, CancellationToken cancellationToken)
     {
+        IBrowserContext? existingContext = null;
+
         lock (_lock)
         {
-            if (_contexts.TryGetValue(contextName, out var existingContext))
+            if (_contexts.TryGetValue(contextName, out var cachedContext))
             {
+                existingContext = cachedContext;
+            }
+        }
+
+        if (existingContext is not null)
+        {
+            try
+            {
+                _ = existingContext.Pages.Count;
                 _logger.LogDebug("Reusing existing browser context: {ContextName}", contextName);
                 return existingContext;
+            }
+            catch (PlaywrightException ex)
+            {
+                _logger.LogWarning(ex, "Discarding closed/invalid browser context: {ContextName}", contextName);
+
+                lock (_lock)
+                {
+                    if (_contexts.TryGetValue(contextName, out var trackedContext) && ReferenceEquals(trackedContext, existingContext))
+                    {
+                        _contexts.Remove(contextName);
+                    }
+                }
             }
         }
 
         // Initialize browser if not already done
-        if (_browser is null)
+        if (_browser is null || !_browser.IsConnected)
         {
+            await ReleaseBrowserAsync();
             await InitializeBrowserAsync(cancellationToken);
         }
 

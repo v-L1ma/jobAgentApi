@@ -88,6 +88,7 @@ public sealed class UserSearchQueryRepository : IUserSearchQueryRepository
         if (searchQuery != null)
         {
             searchQuery.LastExecutedAt = DateTime.UtcNow;
+            await _dbContext.SaveChangesAsync(cancellationToken);
         }
     }
 }

@@ -66,8 +66,11 @@ internal sealed class LinkedInJobScraper : ILinkedInJobScraper
             }
         });
 
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions()
         {
+            UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
+            Locale = "pt-BR",
+            TimezoneId = "America/Sao_Paulo",
             ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
         });
 
@@ -91,6 +94,11 @@ internal sealed class LinkedInJobScraper : ILinkedInJobScraper
 
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(_options.NavigationTimeoutMs);
+
+        page.Response += (_, res) =>
+        {
+            Console.WriteLine($"{res.Status} - {res.Url}");
+        };
 
         _logger.LogInformation("Navigating LinkedIn search page {SearchUrl}", searchUrl);
         await page.GotoAsync(searchUrl, new PageGotoOptions
