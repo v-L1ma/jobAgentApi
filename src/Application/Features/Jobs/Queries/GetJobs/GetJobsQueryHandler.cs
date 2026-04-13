@@ -48,7 +48,13 @@ public sealed class GetJobsQueryHandler : IQueryHandler<GetJobsQuery, PagedJobsR
 
         var totalPages = totalCount > 0 ? (int)Math.Ceiling(totalCount / (double)request.PageSize) : 0;
 
-        var responseItems = items.Select(j => new JobListItemResponse(j.Id, j.Title, j.Description, j.Url, j.IsApplied)).ToList();
+        var responseItems = items.Select(j => new JobListItemResponse(
+            j.Id,
+            j.Title,
+            j.Description,
+            j.Url,
+            j.IsApplied,
+            j.Platform)).ToList();
 
         return new PagedJobsResponse(responseItems, totalCount, request.Page, totalPages, scraperResult);
     }

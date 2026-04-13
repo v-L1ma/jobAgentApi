@@ -27,4 +27,5 @@ public record JobListItemResponse(
     string Title,
     string Description,
     string Url,
-    bool IsApplied);
+    bool IsApplied,
+    string? Platform = null);

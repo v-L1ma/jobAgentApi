@@ -28,7 +28,7 @@ internal sealed class JobRepository : IJobRepository
     public async Task<Job?> GetByPlataformJobIdOrUrlAsync(string plataformJobId, string url, CancellationToken cancellationToken = default)
     {
         var sql = @"
-            SELECT ""Id"", ""PlataformJobId"", ""Title"", ""Description"", ""Url"", ""IsApplied"", ""Status"", 
+            SELECT ""Id"", ""PlataformJobId"", ""Platform"", ""Title"", ""Description"", ""Url"", ""IsApplied"", ""Status"", 
                    ""Active"", ""CreatedBy"", ""CreatedAt"", ""LastModifiedBy"", ""LastModifiedAt""
             FROM ""Jobs""
             WHERE ""PlataformJobId"" = @p0 OR ""Url"" = @p1
@@ -146,7 +146,7 @@ internal sealed class JobRepository : IJobRepository
         var whereSql = whereParts.Count > 0 ? " WHERE " + string.Join(" AND ", whereParts) : string.Empty;
 
         // Colunas SELECT
-        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Title"", j.""Description"", j.""Url"",
+        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Platform"", j.""Title"", j.""Description"", j.""Url"",
                    j.""IsApplied"", j.""Status"", j.""Active"", j.""CreatedBy"", j.""CreatedAt"",
                    j.""LastModifiedBy"", j.""LastModifiedAt""";
 
@@ -254,6 +254,7 @@ internal sealed class JobRepository : IJobRepository
         {
             Id = reader.GetGuid(reader.GetOrdinal("Id")),
             PlataformJobId = reader.GetString(reader.GetOrdinal("PlataformJobId")),
+            Platform = reader.GetString(reader.GetOrdinal("Platform")),
             Title = reader.GetString(reader.GetOrdinal("Title")),
             Description = reader.GetString(reader.GetOrdinal("Description")),
             Url = reader.GetString(reader.GetOrdinal("Url")),
