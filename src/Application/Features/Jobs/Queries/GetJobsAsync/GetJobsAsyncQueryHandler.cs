@@ -23,23 +23,21 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
 
     public async Task<JobSearchResponse> Handle(GetJobsAsyncQuery request, CancellationToken cancellationToken)
     {
-        // Se tem UserId, busca as queries do usuário na tabela UserSearchQueries
         Guid? searchQueryId = null;
-        var userQueryTexts = new List<string>();
+        string? queryForScraping = null;
         SearchQuery? userSearchQuery = null;
 
         if (request.UserId.HasValue)
         {
-            var userSearchQueries = await _userSearchQueryRepository.GetUserSearchQueriesAsync(request.UserId.Value, cancellationToken);
-            userQueryTexts = userSearchQueries.Select(x => x.Query).ToList();
-            searchQueryId = userSearchQueries.FirstOrDefault()?.SearchQueryId;
-            
-            // Busca a search query completa para verificar o LastExecutedAt
             userSearchQuery = await _userSearchQueryRepository.GetUserCurrentSearchQueryAsync(request.UserId.Value, cancellationToken);
+
+            if (userSearchQuery is not null)
+            {
+                searchQueryId = userSearchQuery.Id;
+                queryForScraping = userSearchQuery.Query;
+            }
         }
 
-        // Se encontrou queries do usuário, usa a primeira para scraping
-        var queryForScraping = userQueryTexts.FirstOrDefault();
         var normalizedQuery = !string.IsNullOrEmpty(queryForScraping)
             ? NormalizeQuery(queryForScraping)
             : NormalizeQuery(request.Query);
@@ -61,7 +59,8 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
                 j.Title,
                 j.Description,
                 j.Url,
-                j.IsApplied)).ToList();
+                j.IsApplied,
+                Platform: j.Platform)).ToList();
 
             return new JobSearchResponse(
                 Status: "complete",
@@ -82,8 +81,9 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
         var canRunScraper = true;
         if (userSearchQuery != null)
         {
+            var hasPreviousExecution = userSearchQuery.LastExecutedAt > DateTime.MinValue;
             var timeSinceLastExecution = DateTime.UtcNow - userSearchQuery.LastExecutedAt;
-            if (timeSinceLastExecution < TimeSpan.FromMinutes(15))
+            if (hasPreviousExecution && timeSinceLastExecution < TimeSpan.FromMinutes(15))
             {
                 // Menos de 15 minutos - NÃO ativa o scraper, apenas busca do banco
                 canRunScraper = false;
@@ -134,7 +134,8 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
             j.Title,
             j.Description,
             j.Url,
-            j.IsApplied)).ToList();
+            j.IsApplied,
+            Platform: j.Platform)).ToList();
 
         // Se o scraper está rodando, retorna como "partial" para indicar que mais dados virão
         if (scraperRunning)

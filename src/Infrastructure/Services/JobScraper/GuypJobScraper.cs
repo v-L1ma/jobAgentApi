@@ -183,7 +183,7 @@ internal sealed class GuypJobScraper : IGuypJobScraper
     {
         int offset = 0;
         var jobsProcessed = 0;
-        var maxJobsPerKeyword = _options.MaxJobsPerQuery;
+        var maxJobsPerKeyword = _options.MaxGupyJobsPerQuery;
 
         while (jobsProcessed < maxJobsPerKeyword)
         {
@@ -191,8 +191,9 @@ internal sealed class GuypJobScraper : IGuypJobScraper
 
             try
             {
-                var apiUrl = BuildApiUrl(keyword, _options.MaxJobsPerQuery, offset);
-                _logger.LogInformation("Calling Gupy API for keyword {Keyword} with offset {Offset}", keyword, offset);
+                var remainingJobs = Math.Max(1, maxJobsPerKeyword - jobsProcessed);
+                var apiUrl = BuildApiUrl(keyword, remainingJobs, offset);
+                _logger.LogInformation("Calling Gupy API at {ApiUrl}", apiUrl);
 
                 var response = await _httpClient.GetAsync(apiUrl, cancellationToken);
                 response.EnsureSuccessStatusCode();
@@ -253,7 +254,32 @@ internal sealed class GuypJobScraper : IGuypJobScraper
                     await RandomDelayAsync(cancellationToken);
                 }
 
-                offset += _options.MaxJobsPerQuery;
+                var pageLimit = apiResponse.Pagination.Limit > 0
+                    ? apiResponse.Pagination.Limit
+                    : apiResponse.Data.Count;
+
+                if (pageLimit <= 0)
+                {
+                    _logger.LogWarning(
+                        "Could not determine Gupy page size for keyword {Keyword} at offset {Offset}. Stopping pagination to avoid loop.",
+                        keyword,
+                        offset);
+                    break;
+                }
+
+                var currentOffset = apiResponse.Pagination.Offset >= 0
+                    ? apiResponse.Pagination.Offset
+                    : offset;
+                offset = currentOffset + pageLimit;
+
+                if (apiResponse.Pagination.Total > 0 && offset >= apiResponse.Pagination.Total)
+                {
+                    _logger.LogInformation(
+                        "Reached end of Gupy results for keyword {Keyword}. Total: {Total}",
+                        keyword,
+                        apiResponse.Pagination.Total);
+                    break;
+                }
             }
             catch (HttpRequestException ex)
             {
