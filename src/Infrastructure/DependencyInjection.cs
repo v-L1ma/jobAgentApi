@@ -61,6 +61,7 @@ public static class DependencyInjection
                 services.Configure<JobScraperOptions>(configuration.GetSection(JobScraperOptions.SectionName));
                 services.AddSingleton<ILinkedInJobScraper, LinkedInJobScraper>();
                 services.AddSingleton<IGreenhouseJobScraper, GreenhouseJobScraper>();
+                services.AddSingleton<IVagasComBrJobScraper, VagasComBrJobScraper>();
                 services.AddSingleton<IPlaywrightBrowserManager, PlaywrightBrowserManager>();
 
                 // GuypJobScraper depende de HttpClient - registrar como Singleton com HttpClient manual

@@ -16,6 +16,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
     private readonly ILinkedInJobScraper _linkedInJobScraper;
     private readonly IGuypJobScraper _guypJobScraper;
     private readonly IGreenhouseJobScraper _greenhouseJobScraper;
+    private readonly IVagasComBrJobScraper _vagasComBrJobScraper;
     private readonly IOptions<JobScraperOptions> _options;
     private readonly ILogger<JobScraperExecutionService> _logger;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
@@ -25,6 +26,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
         ILinkedInJobScraper linkedInJobScraper,
         IGuypJobScraper guypJobScraper,
         IGreenhouseJobScraper greenhouseJobScraper,
+        IVagasComBrJobScraper vagasComBrJobScraper,
         IOptions<JobScraperOptions> options,
         ILogger<JobScraperExecutionService> logger)
     {
@@ -32,6 +34,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
         _linkedInJobScraper = linkedInJobScraper;
         _guypJobScraper = guypJobScraper;
         _greenhouseJobScraper = greenhouseJobScraper;
+        _vagasComBrJobScraper = vagasComBrJobScraper;
         _options = options;
         _logger = logger;
     }
@@ -108,14 +111,30 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                         cancellationToken);
 
                     // Greenhouse - limite por query
-                    await RunGreenhouseQueryWithRetryAsync(
+                    // await RunGreenhouseQueryWithRetryAsync(
+                    //     context,
+                    //     job => SaveJobAsync(
+                    //         dbContext,
+                    //         context,
+                    //         queryState,
+                    //         counters,
+                    //         Platform.Greenhouse,
+                    //         job.Id,
+                    //         job.Title,
+                    //         job.Url,
+                    //         job.Description,
+                    //         cancellationToken),
+                    //     cancellationToken);
+
+                    // Vagas.com.br - limite por query
+                    await RunVagasComBrQueryWithRetryAsync(
                         context,
                         job => SaveJobAsync(
                             dbContext,
                             context,
                             queryState,
                             counters,
-                            Platform.Greenhouse,
+                            Platform.VagasComBr,
                             job.Id,
                             job.Title,
                             job.Url,
@@ -199,6 +218,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
             Platform.LinkedIn => _options.Value.MaxLinkedInJobsPerQuery,
             Platform.Gupy => _options.Value.MaxGupyJobsPerQuery,
             Platform.Greenhouse => _options.Value.MaxGreenhouseJobsPerQuery,
+            Platform.VagasComBr => _options.Value.MaxVagasComBrJobsPerQuery,
             _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, null)
         };
 
@@ -230,6 +250,11 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
 
         if (existingJob is not null)
         {
+            if (string.IsNullOrWhiteSpace(existingJob.Platform))
+            {
+                existingJob.Platform = platform.ToString();
+            }
+
             existingJob.Status = "skipped";
             existingJob.LastModifiedBy = "job-scraper";
             existingJob.LastModifiedAt = DateTime.UtcNow;
@@ -254,6 +279,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
         {
             Id = Guid.NewGuid(),
             PlataformJobId = jobId,
+            Platform = platform.ToString(),
             Title = title,
             Description = description ?? string.Empty,
             Url = url,
@@ -432,6 +458,43 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                 _logger.LogWarning(
                     ex,
                     "Transient failure while scraping Greenhouse query {SearchQueryId}. Retry attempt {Attempt}",
+                    context.SearchQueryId,
+                    attempt + 1);
+
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
+    }
+
+    private async Task RunVagasComBrQueryWithRetryAsync(
+        QueryExecutionContext context,
+        Func<VagasComBrScrapedJob, Task<bool>> onJob,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt <= _options.Value.RetryCount; attempt++)
+        {
+            try
+            {
+                await _vagasComBrJobScraper.StreamJobsAsync(
+                    context.Query,
+                    context.Location,
+                    onJob,
+                    cancellationToken);
+
+                return;
+            }
+            catch (Exception ex) when (ex is TimeoutException or PlaywrightException or HttpRequestException or TaskCanceledException)
+            {
+                if (attempt >= _options.Value.RetryCount)
+                {
+                    await SaveFailureScreenshotAsync(context.SearchQueryId, cancellationToken);
+                    throw;
+                }
+
+                var delay = _options.Value.RetryBaseDelayMs * (int)Math.Pow(2, attempt);
+                _logger.LogWarning(
+                    ex,
+                    "Transient failure while scraping Vagas.com.br query {SearchQueryId}. Retry attempt {Attempt}",
                     context.SearchQueryId,
                     attempt + 1);
 

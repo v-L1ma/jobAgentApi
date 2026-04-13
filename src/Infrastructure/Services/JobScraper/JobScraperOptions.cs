@@ -12,13 +12,14 @@ public sealed class JobScraperOptions
     public int MinDelayMs { get; set; } = 1000;
     public int MaxDelayMs { get; set; } = 2500;
     public int MaxJobsPerQuery { get; set; } = 20;
-    public int MaxApplicationsPerDay { get; set; } = 50;
-    public bool EasyApplyOnly { get; set; } = true;
+    public int MaxApplicationsPerDay { get; set; } = 100;
+    public bool EasyApplyOnly { get; set; } = false;
     public int MaxScrollIterations { get; set; } = 20;
     public int MaxJobsPerExecution { get; set; } = 100;
-    public int MaxLinkedInJobsPerQuery { get; set; } = 20;
+    public int MaxLinkedInJobsPerQuery { get; set; } = 25;
     public int MaxGupyJobsPerQuery { get; set; } = 50;
     public int MaxGreenhouseJobsPerQuery { get; set; } = 50;
+    public int MaxVagasComBrJobsPerQuery { get; set; } = 50;
     public int RetryCount { get; set; } = 2;
     public int RetryBaseDelayMs { get; set; } = 1000;
     public string ScreenshotsPath { get; set; } = "logs/errors";

@@ -4,5 +4,6 @@ public enum Platform
 {
     LinkedIn,
     Gupy,
-    Greenhouse
+    Greenhouse,
+    VagasComBr
 }
