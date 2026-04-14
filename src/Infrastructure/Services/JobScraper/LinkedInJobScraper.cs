@@ -11,7 +11,7 @@ internal interface ILinkedInJobScraper
     Task StreamJobsAsync(
         string query,
         string location,
-    string? liAtCookie,
+        string? liAtCookie,
         bool easyApplyOnly,
         Func<LinkedInScrapedJob, Task<bool>> onJob,
         CancellationToken cancellationToken);
@@ -36,11 +36,16 @@ internal sealed class LinkedInJobScraper : ILinkedInJobScraper
 
     private readonly JobScraperOptions _options;
     private readonly ILogger<LinkedInJobScraper> _logger;
+    private readonly IPlaywrightBrowserManager _browserManager;
 
-    public LinkedInJobScraper(IOptions<JobScraperOptions> options, ILogger<LinkedInJobScraper> logger)
+    public LinkedInJobScraper(
+        IOptions<JobScraperOptions> options,
+        ILogger<LinkedInJobScraper> logger,
+        IPlaywrightBrowserManager browserManager)
     {
         _options = options.Value;
         _logger = logger;
+        _browserManager = browserManager;
     }
 
     public async Task StreamJobsAsync(
@@ -54,25 +59,7 @@ internal sealed class LinkedInJobScraper : ILinkedInJobScraper
         var desiredLocations = ParseDesiredLocations(location);
         var searchUrl = BuildSearchUrl(query, easyApplyOnly);
 
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = _options.Headless,
-            SlowMo = _options.SlowMoMs,
-            Args = new[]
-            {
-                "--no-sandbox",
-                "--disable-setuid-sandbox"
-            }
-        });
-
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions()
-        {
-            UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
-            Locale = "pt-BR",
-            TimezoneId = "America/Sao_Paulo",
-            ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
-        });
+        var context = await _browserManager.GetOrCreateContextAsync("linkedin", cancellationToken);
 
         if (!string.IsNullOrWhiteSpace(liAtCookie))
         {
@@ -92,130 +79,167 @@ internal sealed class LinkedInJobScraper : ILinkedInJobScraper
             _logger.LogInformation("LinkedIn li_at cookie injected for authenticated scraping session");
         }
 
-        var page = await context.NewPageAsync();
-        page.SetDefaultTimeout(_options.NavigationTimeoutMs);
+        IPage? page = null;
 
-        page.Response += (_, res) =>
+        try
         {
-            Console.WriteLine($"{res.Status} - {res.Url}");
-        };
-
-        _logger.LogInformation("Navigating LinkedIn search page {SearchUrl}", searchUrl);
-        await page.GotoAsync(searchUrl, new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = _options.NavigationTimeoutMs
-        });
-
-        var processedJobIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        for (var iteration = 0; iteration < _options.MaxScrollIterations; iteration++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            await page.WaitForSelectorAsync(JobListContainerSelector, new PageWaitForSelectorOptions
+            page = await context.NewPageAsync();
+            page.SetDefaultTimeout(_options.NavigationTimeoutMs);
+            page.Response += (_, res) =>
             {
+                if (res.Status < 200 || res.Status >= 300)
+                {
+                    _logger.LogWarning(
+                        "LinkedIn response with non-success status {Status} for {Url}",
+                        res.Status,
+                        res.Url);
+                }
+            };
+
+            _logger.LogInformation("Navigating LinkedIn search page {SearchUrl}", searchUrl);
+            await page.GotoAsync(searchUrl, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
                 Timeout = _options.NavigationTimeoutMs
-            }).ConfigureAwait(false);
+            });
 
-            var cards = await page.QuerySelectorAllAsync(JobCardSelector);
-            var newJobsFound = 0;
+            var processedJobIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            for (var i = 0; i < cards.Count; i++)
+            for (var iteration = 0; iteration < _options.MaxScrollIterations; iteration++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                cards = await page.QuerySelectorAllAsync(JobCardSelector);
-                if (i >= cards.Count)
-                {
-                    break;
-                }
-
-                var card = cards[i];
-                var jobId = await card.GetAttributeAsync("data-occludable-job-id");
-                if (string.IsNullOrWhiteSpace(jobId) || processedJobIds.Contains(jobId))
-                {
-                    continue;
-                }
-
-                processedJobIds.Add(jobId);
-                newJobsFound++;
-
-                try
-                {
-                    await card.ScrollIntoViewIfNeededAsync();
-                    await page.WaitForTimeoutAsync(500);
-                    await card.ClickAsync();
-                }
-                catch (PlaywrightException)
-                {
-                    continue;
-                }
-
-                await page.WaitForSelectorAsync(JobDetailsReadySelector, new PageWaitForSelectorOptions
+                await page.WaitForSelectorAsync(JobListContainerSelector, new PageWaitForSelectorOptions
                 {
                     Timeout = _options.NavigationTimeoutMs
                 }).ConfigureAwait(false);
 
-                await RandomDelayAsync(cancellationToken);
+                var cards = await page.QuerySelectorAllAsync(JobCardSelector);
+                var newJobsFound = 0;
 
-                var (isValidLocation, description) = await ValidateJobDetailsAsync(page, desiredLocations);
-                if (!isValidLocation)
+                for (var i = 0; i < cards.Count; i++)
                 {
-                    continue;
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                var scraped = await ExtractCardDataAsync(card, jobId);
-                var job = new LinkedInScrapedJob(
-                    jobId,
-                    string.IsNullOrWhiteSpace(scraped.Title) ? "Unknown" : scraped.Title,
-                    string.IsNullOrWhiteSpace(scraped.Company) ? "Unknown" : scraped.Company,
-                    string.IsNullOrWhiteSpace(scraped.Url) ? $"https://www.linkedin.com/jobs/view/{jobId}/" : scraped.Url,
-                    string.IsNullOrWhiteSpace(scraped.Location) ? "Unknown" : scraped.Location,
-                    scraped.EasyApply,
-                    description);
-
-                var shouldContinue = await onJob(job);
-                if (!shouldContinue)
-                {
-                    return;
-                }
-
-                await RandomDelayAsync(cancellationToken);
-            }
-
-            if (newJobsFound == 0)
-            {
-                await page.EvaluateAsync(
-                    "selector => { const container = document.querySelector(selector); if (container) container.scrollBy(0, 1000); }",
-                    JobListContainerSelector);
-
-                await page.WaitForTimeoutAsync(2000);
-
-                var items = await page.QuerySelectorAllAsync(JobCardSelector);
-                var foundNew = false;
-                foreach (var item in items)
-                {
-                    var id = await item.GetAttributeAsync("data-occludable-job-id");
-                    if (!string.IsNullOrWhiteSpace(id) && !processedJobIds.Contains(id))
+                    cards = await page.QuerySelectorAllAsync(JobCardSelector);
+                    if (i >= cards.Count)
                     {
-                        foundNew = true;
+                        break;
+                    }
+
+                    var card = cards[i];
+                    var jobId = await card.GetAttributeAsync("data-occludable-job-id");
+                    if (string.IsNullOrWhiteSpace(jobId) || processedJobIds.Contains(jobId))
+                    {
+                        _logger.LogWarning(
+                            "[LinkedIn] Job SKIPPED reason={Reason} jobId={JobId}",
+                            string.IsNullOrWhiteSpace(jobId) ? "missing_job_id" : "already_processed_in_session",
+                            jobId ?? "n/a");
+                        continue;
+                    }
+
+                    processedJobIds.Add(jobId);
+                    newJobsFound++;
+
+                    try
+                    {
+                        await card.ScrollIntoViewIfNeededAsync();
+                        await page.WaitForTimeoutAsync(500);
+                        await card.ClickAsync();
+                    }
+                    catch (PlaywrightException)
+                    {
+                        _logger.LogWarning("[LinkedIn] Job SKIPPED reason=card_click_failed jobId={JobId}", jobId);
+                        continue;
+                    }
+
+                    await page.WaitForSelectorAsync(JobDetailsReadySelector, new PageWaitForSelectorOptions
+                    {
+                        Timeout = _options.NavigationTimeoutMs
+                    }).ConfigureAwait(false);
+
+                    await RandomDelayAsync(cancellationToken);
+
+                    var (isValidLocation, description) = await ValidateJobDetailsAsync(page, desiredLocations);
+                    if (!isValidLocation)
+                    {
+                        _logger.LogWarning("[LinkedIn] Job SKIPPED reason=location_mismatch jobId={JobId}", jobId);
+                        continue;
+                    }
+
+                    var scraped = await ExtractCardDataAsync(card, jobId);
+                    var job = new LinkedInScrapedJob(
+                        jobId,
+                        string.IsNullOrWhiteSpace(scraped.Title) ? "Unknown" : scraped.Title,
+                        string.IsNullOrWhiteSpace(scraped.Company) ? "Unknown" : scraped.Company,
+                        string.IsNullOrWhiteSpace(scraped.Url) ? $"https://www.linkedin.com/jobs/view/{jobId}/" : scraped.Url,
+                        string.IsNullOrWhiteSpace(scraped.Location) ? "Unknown" : scraped.Location,
+                        scraped.EasyApply,
+                        description);
+
+                    _logger.LogWarning(
+                        "[LinkedIn] Job FOUND jobId={JobId} title={Title} company={Company}",
+                        job.Id,
+                        job.Title,
+                        job.Company);
+
+                    var shouldContinue = await onJob(job);
+                    if (!shouldContinue)
+                    {
+                        _logger.LogWarning("[LinkedIn] Job SKIPPED reason=callback_requested_stop jobId={JobId}", job.Id);
+                        return;
+                    }
+
+                    await RandomDelayAsync(cancellationToken);
+                }
+
+                if (newJobsFound == 0)
+                {
+                    await page.EvaluateAsync(
+                        "selector => { const container = document.querySelector(selector); if (container) container.scrollBy(0, 1000); }",
+                        JobListContainerSelector);
+
+                    await page.WaitForTimeoutAsync(2000);
+
+                    var items = await page.QuerySelectorAllAsync(JobCardSelector);
+                    var foundNew = false;
+                    foreach (var item in items)
+                    {
+                        var id = await item.GetAttributeAsync("data-occludable-job-id");
+                        if (!string.IsNullOrWhiteSpace(id) && !processedJobIds.Contains(id))
+                        {
+                            foundNew = true;
+                            break;
+                        }
+                    }
+
+                    if (!foundNew)
+                    {
                         break;
                     }
                 }
-
-                if (!foundNew)
+                else
                 {
-                    break;
+                    await page.EvaluateAsync(
+                        "selector => { const el = document.querySelector(selector); if (el) el.scrollBy({ top: Math.floor(el.clientHeight * 0.85), behavior: 'smooth' }); }",
+                        JobListContainerSelector);
+
+                    await page.WaitForTimeoutAsync(2000);
                 }
             }
-            else
+        }
+        finally
+        {
+            if (page is not null)
             {
-                await page.EvaluateAsync(
-                    "selector => { const el = document.querySelector(selector); if (el) el.scrollBy({ top: Math.floor(el.clientHeight * 0.85), behavior: 'smooth' }); }",
-                    JobListContainerSelector);
-
-                await page.WaitForTimeoutAsync(2000);
+                try
+                {
+                    await page.CloseAsync();
+                }
+                catch (PlaywrightException ex)
+                {
+                    _logger.LogDebug(ex, "Ignoring LinkedIn page close failure");
+                }
             }
         }
     }

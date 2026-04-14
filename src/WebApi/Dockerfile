@@ -14,8 +14,13 @@ EXPOSE 80
 
 # Ensure browsers are available and PATH is set for running Playwright
 ENV PATH="/root/.dotnet/tools:${PATH}"
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV DOTNET_TieredCompilation=1
+ENV DOTNET_GCHeapHardLimitPercent=70
+ENV DOTNET_GCServer=0
+ENV DOTNET_GCConcurrent=1
+ENV DOTNET_TieredPGO=1
+ENV DOTNET_TC_QuickJitForLoops=1
 
 COPY --from=build /app/publish .
 

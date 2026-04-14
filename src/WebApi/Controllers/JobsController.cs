@@ -34,6 +34,9 @@ public class JobsController : ControllerBase
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
         Guid.TryParse(userIdStr, out Guid userId);
 
@@ -58,6 +61,9 @@ public class JobsController : ControllerBase
         [FromQuery] int pageSize = 10,
         [FromQuery] bool triggerScraper = false)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
         Guid.TryParse(userIdStr, out Guid userId);
         var query = new GetJobsQuery(stack, location, page, pageSize, userId, triggerScraper);

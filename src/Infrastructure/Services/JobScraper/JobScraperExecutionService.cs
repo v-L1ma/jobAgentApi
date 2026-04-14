@@ -20,6 +20,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
     private readonly IOptions<JobScraperOptions> _options;
     private readonly ILogger<JobScraperExecutionService> _logger;
     private readonly SemaphoreSlim _executionLock = new(1, 1);
+    private readonly SemaphoreSlim _saveJobLock = new(1, 1);
 
     public JobScraperExecutionService(
         IServiceScopeFactory scopeFactory,
@@ -68,6 +69,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
 
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var jobRepository = scope.ServiceProvider.GetRequiredService<IJobRepository>();
 
             var queryContexts = await LoadQueryContextsAsync(dbContext, request, cancellationToken);
             if (queryContexts.Count == 0)
@@ -95,10 +97,11 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                 try
                 {
                     // Gupy - limite por query
+                    _logger.LogWarning("Scraper start: Gupy for query {SearchQueryId}", context.SearchQueryId);
                     await RunGuypQueryWithRetryAsync(
                         context,
                         job => SaveJobAsync(
-                            dbContext,
+                            jobRepository,
                             context,
                             queryState,
                             counters,
@@ -109,12 +112,16 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                             job.Description,
                             cancellationToken),
                         cancellationToken);
+                    _logger.LogWarning(
+                        "Scraper end: Gupy for query {SearchQueryId}. SavedOnPlatform={SavedOnPlatform}",
+                        context.SearchQueryId,
+                        counters.GetJobsAddedCount(context.SearchQueryId, Platform.Gupy));
 
                     // Greenhouse - limite por query
                     // await RunGreenhouseQueryWithRetryAsync(
                     //     context,
                     //     job => SaveJobAsync(
-                    //         dbContext,
+                    //         jobRepository,
                     //         context,
                     //         queryState,
                     //         counters,
@@ -127,10 +134,11 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                     //     cancellationToken);
 
                     // Vagas.com.br - limite por query
+                    _logger.LogWarning("Scraper start: VagasComBr for query {SearchQueryId}", context.SearchQueryId);
                     await RunVagasComBrQueryWithRetryAsync(
                         context,
                         job => SaveJobAsync(
-                            dbContext,
+                            jobRepository,
                             context,
                             queryState,
                             counters,
@@ -141,12 +149,17 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                             job.Description,
                             cancellationToken),
                         cancellationToken);
+                    _logger.LogWarning(
+                        "Scraper end: VagasComBr for query {SearchQueryId}. SavedOnPlatform={SavedOnPlatform}",
+                        context.SearchQueryId,
+                        counters.GetJobsAddedCount(context.SearchQueryId, Platform.VagasComBr));
 
                     // LinkedIn - limite por query
+                    _logger.LogWarning("Scraper start: LinkedIn for query {SearchQueryId}", context.SearchQueryId);
                     await RunLinkedInQueryWithRetryAsync(
                         context,
                         job => SaveJobAsync(
-                            dbContext,
+                            jobRepository,
                             context,
                             queryState,
                             counters,
@@ -157,6 +170,10 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                             job.Description,
                             cancellationToken),
                         cancellationToken);
+                    _logger.LogWarning(
+                        "Scraper end: LinkedIn for query {SearchQueryId}. SavedOnPlatform={SavedOnPlatform}",
+                        context.SearchQueryId,
+                        counters.GetJobsAddedCount(context.SearchQueryId, Platform.LinkedIn));
                 }
                 catch (Exception ex)
                 {
@@ -189,7 +206,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
     }
 
     private async Task<bool> SaveJobAsync(
-        AppDbContext dbContext,
+        IJobRepository jobRepository,
         QueryExecutionContext context,
         QueryState queryState,
         QueryExecutionCounters counters,
@@ -200,105 +217,124 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
         string? description,
         CancellationToken cancellationToken)
     {
-        // Cria scope para acessar IJobRepository (Scoped)
-        using var scope = _scopeFactory.CreateScope();
-        var jobRepository = scope.ServiceProvider.GetRequiredService<IJobRepository>();
-        
-        cancellationToken.ThrowIfCancellationRequested();
-        counters.MarkFound();
+        await _saveJobLock.WaitAsync(cancellationToken);
 
-        using var jobScope = _logger.BeginScope(new Dictionary<string, object>
+        try
         {
-            ["jobId"] = jobId
-        });
+            cancellationToken.ThrowIfCancellationRequested();
+            counters.MarkFound();
 
-        // Check per-query + platform limit (skipped jobs don't count)
-        var limit = platform switch
-        {
-            Platform.LinkedIn => _options.Value.MaxLinkedInJobsPerQuery,
-            Platform.Gupy => _options.Value.MaxGupyJobsPerQuery,
-            Platform.Greenhouse => _options.Value.MaxGreenhouseJobsPerQuery,
-            Platform.VagasComBr => _options.Value.MaxVagasComBrJobsPerQuery,
-            _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, null)
-        };
-
-        var canAdd = counters.TryAddJob(context.SearchQueryId, platform, limit);
-        if (!canAdd)
-        {
-            _logger.LogInformation(
-                "Limite de {Limit} vagas atingido para query '{QueryText}' na plataforma {Platform}. Parando esta query.",
-                limit, context.Query, platform);
-            return false;
-        }
-
-        // Check global execution limit (safety net)
-        if (counters.TotalJobsSaved >= _options.Value.MaxJobsPerExecution)
-        {
-            _logger.LogInformation("Execution global limit reached ({SavedCount}/{MaxCount}). Stopping scraping.",
-                counters.TotalJobsSaved, _options.Value.MaxJobsPerExecution);
-            return false;
-        }
-
-        var canSaveToday = await CanSaveTodayAsync(jobRepository, cancellationToken);
-        if (!canSaveToday)
-        {
-            _logger.LogInformation("Stopping query because daily limit was reached");
-            return false;
-        }
-
-        var existingJob = await jobRepository.GetByPlataformJobIdOrUrlAsync(jobId, url, cancellationToken);
-
-        if (existingJob is not null)
-        {
-            if (string.IsNullOrWhiteSpace(existingJob.Platform))
+            using var jobScope = _logger.BeginScope(new Dictionary<string, object>
             {
-                existingJob.Platform = platform.ToString();
+                ["jobId"] = jobId
+            });
+
+            // Check per-query + platform limit (skipped jobs don't count)
+            var limit = platform switch
+            {
+                Platform.LinkedIn => _options.Value.MaxLinkedInJobsPerQuery,
+                Platform.Gupy => _options.Value.MaxGupyJobsPerQuery,
+                Platform.Greenhouse => _options.Value.MaxGreenhouseJobsPerQuery,
+                Platform.VagasComBr => _options.Value.MaxVagasComBrJobsPerQuery,
+                _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, null)
+            };
+
+            var canAdd = counters.TryAddJob(context.SearchQueryId, platform, limit);
+            if (!canAdd)
+            {
+                _logger.LogWarning(
+                    "Limite de {Limit} vagas atingido para query '{QueryText}' na plataforma {Platform}. Parando esta query.",
+                    limit, context.Query, platform);
+                return false;
             }
 
-            existingJob.Status = "skipped";
-            existingJob.LastModifiedBy = "job-scraper";
-            existingJob.LastModifiedAt = DateTime.UtcNow;
-            await jobRepository.UpdateAsync(existingJob, cancellationToken);
+            // Check global execution limit (safety net)
+            if (counters.TotalJobsSaved >= _options.Value.MaxJobsPerExecution)
+            {
+                _logger.LogWarning("Execution global limit reached ({SavedCount}/{MaxCount}). Stopping scraping.",
+                    counters.TotalJobsSaved, _options.Value.MaxJobsPerExecution);
+                return false;
+            }
+
+            var canSaveToday = await CanSaveTodayAsync(jobRepository, cancellationToken);
+            if (!canSaveToday)
+            {
+                _logger.LogWarning("Stopping query because daily limit was reached");
+                return false;
+            }
+
+            var existingJob = await jobRepository.GetByPlataformJobIdOrUrlAsync(jobId, url, cancellationToken);
+
+            if (existingJob is not null)
+            {
+                if (string.IsNullOrWhiteSpace(existingJob.Platform))
+                {
+                    existingJob.Platform = platform.ToString();
+                }
+
+                existingJob.Status = "skipped";
+                existingJob.LastModifiedBy = "job-scraper";
+                existingJob.LastModifiedAt = DateTime.UtcNow;
+                await jobRepository.UpdateAsync(existingJob, cancellationToken);
+                await jobRepository.SaveChangesAsync(cancellationToken);
+
+                counters.MarkSkipped();
+                _logger.LogWarning(
+                    "[{Platform}] Job SKIPPED reason=already_exists jobId={JobId} title={Title} url={Url}",
+                    platform,
+                    jobId,
+                    title,
+                    url);
+                return true; // Continua, mas nao conta no limite
+            }
+
+            if (context.ExcludeKeywords.Any(keyword =>
+                    !string.IsNullOrWhiteSpace(keyword) &&
+                    title.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            {
+                counters.MarkSkipped();
+                _logger.LogWarning(
+                    "[{Platform}] Job SKIPPED reason=excluded_keyword jobId={JobId} title={Title}",
+                    platform,
+                    jobId,
+                    title);
+                return true; // Continua, mas nao conta no limite
+            }
+
+            var newJob = new Job
+            {
+                Id = Guid.NewGuid(),
+                PlataformJobId = jobId,
+                Platform = platform.ToString(),
+                Title = title,
+                Description = description ?? string.Empty,
+                Url = url,
+                Status = "saved",
+                IsApplied = false,
+                Active = true,
+                CreatedBy = "job-scraper",
+                LastModifiedBy = "job-scraper",
+                CreatedAt = DateTime.UtcNow,
+                LastModifiedAt = DateTime.UtcNow
+            };
+
+            await jobRepository.AddAsync(newJob, cancellationToken);
             await jobRepository.SaveChangesAsync(cancellationToken);
 
-            counters.MarkSkipped();
-            _logger.LogInformation("Job skipped because it already exists");
-            return true; // Continua, mas nao conta no limite
+            queryState.SavedCount++;
+            counters.MarkSaved();
+            _logger.LogWarning(
+                "[{Platform}] Job ADDED jobId={JobId} title={Title} url={Url}",
+                platform,
+                jobId,
+                title,
+                url);
+            return true;
         }
-
-        if (context.ExcludeKeywords.Any(keyword =>
-                !string.IsNullOrWhiteSpace(keyword) &&
-                title.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+        finally
         {
-            counters.MarkSkipped();
-            _logger.LogInformation("Job skipped by excluded keyword");
-            return true; // Continua, mas nao conta no limite
+            _saveJobLock.Release();
         }
-
-        var newJob = new Job
-        {
-            Id = Guid.NewGuid(),
-            PlataformJobId = jobId,
-            Platform = platform.ToString(),
-            Title = title,
-            Description = description ?? string.Empty,
-            Url = url,
-            Status = "saved",
-            IsApplied = false,
-            Active = true,
-            CreatedBy = "job-scraper",
-            LastModifiedBy = "job-scraper",
-            CreatedAt = DateTime.UtcNow,
-            LastModifiedAt = DateTime.UtcNow
-        };
-
-        await jobRepository.AddAsync(newJob, cancellationToken);
-        await jobRepository.SaveChangesAsync(cancellationToken);
-
-        queryState.SavedCount++;
-        counters.MarkSaved();
-        _logger.LogInformation("Job saved successfully");
-        return true;
     }
 
     private async Task<List<QueryExecutionContext>> LoadQueryContextsAsync(

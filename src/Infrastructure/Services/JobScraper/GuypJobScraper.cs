@@ -218,6 +218,7 @@ internal sealed class GuypJobScraper : IGuypJobScraper
 
                     if (!TryRegisterProcessedJob(processedJobIds, processedJobIdsLock, jobData.Id))
                     {
+                        _logger.LogWarning("[Gupy] Job SKIPPED reason=already_processed_in_session jobId={JobId}", jobData.Id);
                         continue; // Job already processed
                     }
 
@@ -231,7 +232,10 @@ internal sealed class GuypJobScraper : IGuypJobScraper
 
                     if (!isValidLocation && desiredLocations.Count > 0)
                     {
-                        _logger.LogDebug("Job location {Location} doesn't match search filters", jobLocation);
+                        _logger.LogWarning(
+                            "[Gupy] Job SKIPPED reason=location_mismatch jobId={JobId} location={Location}",
+                            jobData.Id,
+                            jobLocation);
                         continue;
                     }
 
@@ -243,11 +247,18 @@ internal sealed class GuypJobScraper : IGuypJobScraper
                         jobLocation,
                         jobData.Description);
 
+                    _logger.LogWarning(
+                        "[Gupy] Job FOUND jobId={JobId} title={Title} company={Company}",
+                        job.Id,
+                        job.Title,
+                        job.Company);
+
                     var shouldContinue = await onJob(job);
                     jobsProcessed++;
 
                     if (!shouldContinue)
                     {
+                        _logger.LogWarning("[Gupy] Job SKIPPED reason=callback_requested_stop jobId={JobId}", job.Id);
                         return false; // Callback requested stop
                     }
 

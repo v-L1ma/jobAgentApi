@@ -10,7 +10,7 @@ using Microsoft.IdentityModel.Tokens;
 using jobAgentApi.Infrastructure.Utils;
 
 Log.Logger = new LoggerConfiguration()
-    .Enrich.FromLogContext()
+    .MinimumLevel.Warning()
     .WriteTo.Console()
     .CreateLogger();
 
@@ -42,13 +42,22 @@ builder.Services.AddOpenTelemetry()
     .WithTracing(tracing =>
     {
         tracing.AddAspNetCoreInstrumentation();
-        tracing.AddConsoleExporter();
+
+        if (builder.Environment.IsDevelopment())
+        {
+            tracing.AddConsoleExporter();
+        }
     })
     .WithMetrics(metrics =>
     {
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
-        metrics.AddRuntimeInstrumentation();
+
+        if (builder.Environment.IsDevelopment())
+        {
+            metrics.AddRuntimeInstrumentation();
+        }
+
         metrics.AddPrometheusExporter();
     });
 

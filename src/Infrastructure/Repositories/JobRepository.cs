@@ -146,7 +146,7 @@ internal sealed class JobRepository : IJobRepository
         var whereSql = whereParts.Count > 0 ? " WHERE " + string.Join(" AND ", whereParts) : string.Empty;
 
         // Colunas SELECT
-        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Platform"", j.""Title"", j.""Description"", j.""Url"",
+        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Platform"", j.""Title"", LEFT(COALESCE(j.""Description"", ''), 2000) AS ""Description"", j.""Url"",
                    j.""IsApplied"", j.""Status"", j.""Active"", j.""CreatedBy"", j.""CreatedAt"",
                    j.""LastModifiedBy"", j.""LastModifiedAt""";
 
@@ -157,22 +157,6 @@ internal sealed class JobRepository : IJobRepository
         var dataSql = $@"SELECT {columns} {fromSql}{whereSql} ORDER BY j.""CreatedAt"" DESC LIMIT @p{paramIndex} OFFSET @p{paramIndex + 1}";
         parameters.Add(new NpgsqlParameter($"@p{paramIndex}", pageSize));
         parameters.Add(new NpgsqlParameter($"@p{paramIndex + 1}", (page - 1) * pageSize));
-
-        Console.WriteLine("================================================");
-        Console.WriteLine("================================================");
-        Console.WriteLine("================================================");
-        Console.WriteLine("================================================");
-        Console.WriteLine("SQL Gerada:");
-        Console.WriteLine(dataSql);
-        Console.WriteLine("Parâmetros:");
-        foreach (var param in parameters)        {
-            Console.WriteLine($"{param.ParameterName}: {param.Value}");
-        }
-        Console.WriteLine("================================================");
-        Console.WriteLine("================================================");
-        Console.WriteLine("================================================");
-        Console.WriteLine("================================================");
-
 
         try
         {

@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using jobAgentApi.Application.Abstractions;
+using jobAgentApi.Infrastructure.Services.JobScraper;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace jobAgentApi.Infrastructure.Services.JobScraperQueue;
 
@@ -11,17 +13,23 @@ public sealed class JobScrapingQueueService : IJobScrapingQueueService
     private readonly ConcurrentDictionary<string, ScrapingQueryState> _queriesInProgress;
     private readonly ILogger<JobScrapingQueueService> _logger;
 
-    public JobScrapingQueueService(ILogger<JobScrapingQueueService> logger)
+    public JobScrapingQueueService(
+        ILogger<JobScrapingQueueService> logger,
+        IOptions<JobScraperOptions> scraperOptions)
     {
-        // Channel ilimitado para MVP (pode ser limitado em produção)
-        _channel = Channel.CreateUnbounded<ScrapingQueueRequest>(new UnboundedChannelOptions
+        var queueCapacity = Math.Max(10, scraperOptions.Value.QueueCapacity);
+
+        _channel = Channel.CreateBounded<ScrapingQueueRequest>(new BoundedChannelOptions(queueCapacity)
         {
             SingleWriter = false,
-            SingleReader = false
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.Wait
         });
 
         _queriesInProgress = new ConcurrentDictionary<string, ScrapingQueryState>(StringComparer.OrdinalIgnoreCase);
         _logger = logger;
+
+        _logger.LogInformation("Job scraping queue initialized with capacity {QueueCapacity}", queueCapacity);
     }
 
     public async Task EnqueueScrapingRequestAsync(ScrapingQueueRequest request, CancellationToken cancellationToken = default)

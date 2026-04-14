@@ -30,19 +30,21 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            ScrapingQueueRequest? currentRequest = null;
+
             try
             {
-                var request = await _queueService.TryDequeueAsync(stoppingToken);
+                currentRequest = await _queueService.TryDequeueAsync(stoppingToken);
                 
-                if (request == null)
+                if (currentRequest == null)
                 {
                     continue;
                 }
 
                 _logger.LogInformation(
                     "Processing scraping request '{RequestId}' for query '{Query}'",
-                    request.RequestId,
-                    request.NormalizedQuery);
+                    currentRequest.RequestId,
+                    currentRequest.NormalizedQuery);
 
                 using var scope = _scopeFactory.CreateScope();
                 var executionService = scope.ServiceProvider.GetRequiredService<IJobScraperExecutionService>();
@@ -52,18 +54,19 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
                 var report = await ExecuteScrapingForQueryAsync(
                     executionService,
                     dbContext,
-                    request,
+                    currentRequest,
                     stoppingToken);
 
                 if (report != null)
                 {
                     _logger.LogInformation(
                         "Scraping request '{RequestId}' completed for query '{Query}'",
-                        request.RequestId,
-                        request.NormalizedQuery);
+                        currentRequest.RequestId,
+                        currentRequest.NormalizedQuery);
                 }
 
-                _queueService.MarkQueryCompleted(request.NormalizedQuery);
+                _queueService.MarkQueryCompleted(currentRequest.NormalizedQuery);
+                currentRequest = null;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -71,6 +74,11 @@ internal sealed class JobScrapingQueueBackgroundService : BackgroundService
             }
             catch (Exception ex)
             {
+                if (currentRequest is not null)
+                {
+                    _queueService.MarkQueryFailed(currentRequest.NormalizedQuery, ex);
+                }
+
                 _logger.LogError(ex, "Error processing scraping queue");
             }
         }

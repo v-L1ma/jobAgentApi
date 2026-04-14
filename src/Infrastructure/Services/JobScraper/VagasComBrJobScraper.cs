@@ -61,30 +61,62 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
             keywords.Count,
             string.Join(", ", keywords));
 
+        var maxParallelKeywords = Math.Clamp(
+            _options.MaxVagasComBrParallelKeywords,
+            1,
+            Math.Max(1, keywords.Count));
+
+        _logger.LogWarning("Vagas.com.br keyword parallelism set to {Parallelism}", maxParallelKeywords);
+
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var processedJobIds = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
-            var tasks = keywords
-                .Select(keyword => ScrapeJobsAsync(
-                    keyword,
-                    desiredLocations,
-                    processedJobIds,
-                    async job =>
+            await Parallel.ForEachAsync(
+                keywords,
+                new ParallelOptions
+                {
+                    CancellationToken = linkedCts.Token,
+                    MaxDegreeOfParallelism = maxParallelKeywords
+                },
+                async (keyword, ct) =>
+                {
+                    try
                     {
-                        var shouldContinue = await onJob(job);
-                        if (!shouldContinue)
-                        {
-                            linkedCts.Cancel();
-                        }
+                        await ScrapeJobsAsync(
+                            keyword,
+                            desiredLocations,
+                            processedJobIds,
+                            async job =>
+                            {
+                                var shouldContinue = await onJob(job);
+                                if (!shouldContinue)
+                                {
+                                    linkedCts.Cancel();
+                                }
 
-                        return shouldContinue;
-                    },
-                    linkedCts.Token))
-                .ToList();
-
-            await Task.WhenAll(tasks);
+                                return shouldContinue;
+                            },
+                            ct);
+                    }
+                    catch (OperationCanceledException) when (linkedCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        // Cancelamento esperado quando callback pede interrupcao.
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        _logger.LogWarning(ex, "Timeout no scraping Vagas.com.br para keyword {Keyword}. Seguindo para as demais.", keyword);
+                    }
+                    catch (PlaywrightException ex)
+                    {
+                        _logger.LogWarning(ex, "Falha Playwright no scraping Vagas.com.br para keyword {Keyword}. Seguindo para as demais.", keyword);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Erro inesperado no scraping Vagas.com.br para keyword {Keyword}. Seguindo para as demais.", keyword);
+                    }
+                });
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -118,11 +150,27 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
         {
             page = await context.NewPageAsync();
 
-            await page.GotoAsync(searchUrl, new PageGotoOptions
+            await page.RouteAsync("**/*", async route =>
             {
-                WaitUntil = WaitUntilState.DOMContentLoaded,
-                Timeout = _options.NavigationTimeoutMs * 2
+                var resourceType = route.Request.ResourceType;
+                if (resourceType is "image" or "media" or "font")
+                {
+                    await route.AbortAsync();
+                    return;
+                }
+
+                await route.ContinueAsync();
             });
+
+            page.SetDefaultTimeout(Math.Max(_options.NavigationTimeoutMs, 15000));
+            page.SetDefaultNavigationTimeout(Math.Max(_options.NavigationTimeoutMs * 2, 30000));
+
+            var couldNavigate = await TryNavigateWithFallbackAsync(page, searchUrl, cancellationToken);
+            if (!couldNavigate)
+            {
+                _logger.LogWarning("Nao foi possivel carregar a URL {Url}. Keyword sera ignorada nesta execucao.", searchUrl);
+                return;
+            }
 
             await RandomDelayAsync(cancellationToken);
 
@@ -156,28 +204,41 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
                         var job = await ExtractJobDataAsync(jobElement);
                         if (job == null)
                         {
+                            _logger.LogWarning("[VagasComBr] Job SKIPPED reason=invalid_or_incomplete_data keyword={Keyword}", keyword);
                             continue;
                         }
 
                         if (!keywordProcessedJobIds.Add(job.Id))
                         {
+                            _logger.LogWarning("[VagasComBr] Job SKIPPED reason=already_processed_in_keyword jobId={JobId}", job.Id);
                             continue;
                         }
 
                         if (!sharedProcessedJobIds.TryAdd(job.Id, 0))
                         {
+                            _logger.LogWarning("[VagasComBr] Job SKIPPED reason=already_processed_in_session jobId={JobId}", job.Id);
                             continue;
                         }
 
                         if (desiredLocations.Count > 0 && !MatchesLocation(job.Location, desiredLocations))
                         {
+                            _logger.LogWarning(
+                                "[VagasComBr] Job SKIPPED reason=location_mismatch jobId={JobId} location={Location}",
+                                job.Id,
+                                job.Location);
                             continue;
                         }
+
+                        _logger.LogWarning(
+                            "[VagasComBr] Job FOUND jobId={JobId} title={Title} company={Company}",
+                            job.Id,
+                            job.Title,
+                            job.Company);
 
                         var shouldContinue = await onJob(job);
                         if (!shouldContinue)
                         {
-                            _logger.LogInformation("Callback solicitou parada do scraping");
+                            _logger.LogWarning("[VagasComBr] Job SKIPPED reason=callback_requested_stop jobId={JobId}", job.Id);
                             return;
                         }
 
@@ -203,8 +264,61 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
         {
             if (page is not null)
             {
-                await page.CloseAsync();
+                try
+                {
+                    await page.CloseAsync();
+                }
+                catch (PlaywrightException ex)
+                {
+                    _logger.LogDebug(ex, "Falha ao fechar pagina no Vagas.com.br");
+                }
             }
+        }
+    }
+
+    private async Task<bool> TryNavigateWithFallbackAsync(
+        IPage page,
+        string searchUrl,
+        CancellationToken cancellationToken)
+    {
+        var primaryTimeout = Math.Max(_options.NavigationTimeoutMs * 2, 30000);
+        var fallbackTimeout = Math.Max(primaryTimeout + 15000, 45000);
+
+        try
+        {
+            await page.GotoAsync(searchUrl, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = primaryTimeout
+            });
+
+            return true;
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(ex,
+                "Timeout ao carregar {Url} com DOMContentLoaded ({TimeoutMs}ms). Tentando fallback COMMIT.",
+                searchUrl,
+                primaryTimeout);
+        }
+
+        try
+        {
+            await page.GotoAsync(searchUrl, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.Commit,
+                Timeout = fallbackTimeout
+            });
+
+            return true;
+        }
+        catch (Exception ex) when (ex is TimeoutException or PlaywrightException)
+        {
+            _logger.LogWarning(ex,
+                "Falha no fallback de navegacao para {Url} com COMMIT ({TimeoutMs}ms).",
+                searchUrl,
+                fallbackTimeout);
+            return false;
         }
     }
 
@@ -212,28 +326,47 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
     {
         try
         {
-            var titleElement = await jobElement.QuerySelectorAsync("h2 a, .titulo-vaga a, .nome-vaga a, a[href*='/vagas-de-']");
-            var title = titleElement != null
-                ? await titleElement.InnerTextAsync()
-                : await jobElement.QuerySelectorAsync("h2, .titulo, .titulo-vaga, .nome-vaga")
-                    .ContinueWith(t => t.Result?.InnerTextAsync().Result ?? "Título não encontrado");
+            var cardData = await jobElement.EvaluateAsync<VagasCardData>("""
+            node => {
+                const readText = (selectors) => {
+                    for (const selector of selectors) {
+                        const element = node.querySelector(selector);
+                        if (element && element.textContent) {
+                            const value = element.textContent.trim();
+                            if (value.length > 0) return value;
+                        }
+                    }
+                    return '';
+                };
 
-            title = CleanText(title);
+                const readHref = (selectors) => {
+                    for (const selector of selectors) {
+                        const element = node.querySelector(selector);
+                        if (element) {
+                            const value = element.getAttribute('href');
+                            if (value && value.trim().length > 0) return value.trim();
+                        }
+                    }
+                    return '';
+                };
+
+                return {
+                    Title: readText(['h2 a', '.titulo-vaga a', '.nome-vaga a', 'a[href*="/vagas-de-"]', 'h2', '.titulo', '.titulo-vaga', '.nome-vaga']),
+                    Href: readHref(['h2 a', '.titulo-vaga a', '.nome-vaga a', 'a[href*="/vagas-de-"]', 'a[href]']),
+                    Company: readText(['.empresa', '.nome-empresa', '[class*="empresa"]']) || 'Empresa não informada',
+                    Location: readText(['.localizacao', '.local', '[class*="localizacao"]', '[class*="local"]']) || 'Local não informado',
+                    Description: readText(['.descricao', '.descricao-vaga', '.resumo-vaga', 'p'])
+                };
+            }
+            """) ?? new VagasCardData();
+
+            var title = CleanText(cardData.Title);
             if (string.IsNullOrWhiteSpace(title) || title == "Título não encontrado")
             {
                 return null;
             }
 
-            var href = titleElement != null
-                ? await titleElement.GetAttributeAsync("href")
-                : null;
-
-            if (string.IsNullOrWhiteSpace(href))
-            {
-                var linkElement = await jobElement.QuerySelectorAsync("a[href]");
-                href = linkElement != null ? await linkElement.GetAttributeAsync("href") : string.Empty;
-            }
-
+            var href = cardData.Href;
             var url = NormalizeUrl(href);
             if (string.IsNullOrWhiteSpace(url))
             {
@@ -246,26 +379,9 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
                 jobId = GenerateJobId(url, title);
             }
 
-            var companyElement = await jobElement.QuerySelectorAsync(".empresa, .nome-empresa, [class*='empresa']");
-            var company = companyElement != null
-                ? await companyElement.InnerTextAsync()
-                : "Empresa não informada";
-
-            company = CleanText(company);
-
-            var locationElement = await jobElement.QuerySelectorAsync(".localizacao, .local, [class*='localizacao'], [class*='local']");
-            var location = locationElement != null
-                ? await locationElement.InnerTextAsync()
-                : "Local não informado";
-
-            location = CleanText(location);
-
-            var descriptionElement = await jobElement.QuerySelectorAsync(".descricao, .descricao-vaga, .resumo-vaga, p");
-            var description = descriptionElement != null
-                ? await descriptionElement.InnerTextAsync()
-                : null;
-
-            description = CleanText(description);
+            var company = CleanText(cardData.Company);
+            var location = CleanText(cardData.Location);
+            var description = CleanText(cardData.Description);
 
             return new VagasComBrScrapedJob(
                 jobId,
@@ -466,5 +582,14 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
         var max = Math.Max(min, _options.MaxDelayMs);
         var delay = Random.Shared.Next(min, max + 1);
         await Task.Delay(delay, cancellationToken);
+    }
+
+    private sealed class VagasCardData
+    {
+        public string Title { get; init; } = string.Empty;
+        public string Href { get; init; } = string.Empty;
+        public string Company { get; init; } = string.Empty;
+        public string Location { get; init; } = string.Empty;
+        public string Description { get; init; } = string.Empty;
     }
 }

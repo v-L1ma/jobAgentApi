@@ -20,8 +20,10 @@ public sealed class JobScraperOptions
     public int MaxGupyJobsPerQuery { get; set; } = 50;
     public int MaxGreenhouseJobsPerQuery { get; set; } = 50;
     public int MaxVagasComBrJobsPerQuery { get; set; } = 50;
+    public int MaxVagasComBrParallelKeywords { get; set; } = 1;
     public int RetryCount { get; set; } = 2;
     public int RetryBaseDelayMs { get; set; } = 1000;
+    public int QueueCapacity { get; set; } = 100;
     public string ScreenshotsPath { get; set; } = "logs/errors";
     public string LiAtCookie { get; set; } = string.Empty;
 }
