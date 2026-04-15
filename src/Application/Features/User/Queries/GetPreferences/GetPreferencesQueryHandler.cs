@@ -1,8 +1,5 @@
-using jobAgentApi.Application.Abstractions;
 using jobAgentApi.Application.Abstractions.Messaging;
 using jobAgentApi.Application.Repositories;
-using jobAgentApi.Domain.Entities;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,20 +7,18 @@ namespace jobAgentApi.Application.Features.User.Queries.GetPreferences;
 
 public sealed class GetPreferencesQueryHandler : IQueryHandler<GetPreferencesQuery, UserPreferencesDto>
 {
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly IUserSearchQueryRepository _userSearchQueryRepository;
 
-    public GetPreferencesQueryHandler(IUnitOfWork unitOfWork)
+    public GetPreferencesQueryHandler(IUserSearchQueryRepository userSearchQueryRepository)
     {
-        _unitOfWork = unitOfWork;
+        _userSearchQueryRepository = userSearchQueryRepository;
     }
 
     public async Task<UserPreferencesDto> Handle(GetPreferencesQuery request, CancellationToken cancellationToken)
     {
-        var preferencesRepository = _unitOfWork.GetRepository<UserPreferences>();
-        var allPreferences = await preferencesRepository.GetAllAsync();
-        var userPreferences = allPreferences.FirstOrDefault(p => p.UserId == request.UserId);
+        var userSearchQuery = await _userSearchQueryRepository.GetUserCurrentSearchQueryAsync(request.UserId, cancellationToken);
 
-        if (userPreferences is null)
+        if (userSearchQuery is null)
         {
             return new UserPreferencesDto
             {
@@ -33,10 +28,10 @@ public sealed class GetPreferencesQueryHandler : IQueryHandler<GetPreferencesQue
 
         return new UserPreferencesDto
         {
-            UserId = userPreferences.UserId,
-            Skills = userPreferences.Skills,
-            Level = userPreferences.Level,
-            Area = userPreferences.Area
+            UserId = request.UserId,
+            Skills = userSearchQuery.Keywords,
+            Level = userSearchQuery.Level,
+            Area = userSearchQuery.Area
         };
     }
 }
