@@ -50,7 +50,7 @@ public sealed class CvAiService : ICvAiService
 
             if (string.IsNullOrWhiteSpace(responseText))
             {
-                throw new DomainException("A IA do Gemini retornou conteúdo vazio.", 502);
+                throw new DomainException("A IA retornou conteúdo vazio.", 502);
             }
 
             return responseText.Trim();
@@ -58,7 +58,7 @@ public sealed class CvAiService : ICvAiService
         catch (Exception ex) when (ex is not DomainException)
         {
             _logger.LogError(ex, "Gemini AI request failed.");
-            throw new DomainException("Falha ao gerar currículo com a IA do Gemini.", 502);
+            throw new DomainException("Falha ao gerar currículo com a IA, tente novamente em alguns instantes.", 502);
         }
     }
 }
