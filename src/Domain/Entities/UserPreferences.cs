@@ -22,6 +22,7 @@ public class UserSearchQuery
 {
     public Guid UserId { get; set; }
     public Guid SearchQueryId { get; set; }
-    
+    public int SavedJobsCount { get; set; } = 0;
+    public DateTime LimitedUntil { get; set; } = DateTime.UtcNow.AddHours(12);
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
