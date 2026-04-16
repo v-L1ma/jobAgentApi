@@ -7,6 +7,7 @@ using jobAgentApi.Application.Features.User.Queries.GetPreferences;
 using jobAgentApi.Application.Features.User.Queries.GetUserStatistics;
 using jobAgentApi.Application.Features.User.Queries.GetUserCv;
 using jobAgentApi.Application.Features.User.Queries.GetGeneratedCvs;
+using jobAgentApi.Application.Features.User.Queries.GetUserProfile;
 using jobAgentApi.Application.Abstractions.Messaging;
 using jobAgentApi.Application.Repositories;
 using jobAgentApi.Domain.Entities;
@@ -14,6 +15,7 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using jobAgentApi.Application.Features.User.Commands.EvaluateCv;
+using jobAgentApi.Application.Features.User.Commands.UpdateProfile;
 
 namespace jobAgentApi.WebApi.Controllers;
 
@@ -60,6 +62,46 @@ public class UsersController : ControllerBase
 
         var query = new GetPreferencesQuery(userId);
         var result = await _sender.Send(query);
+
+        return Ok(result);
+    }
+
+    [HttpPatch("profile")]
+    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest request, CancellationToken cancellationToken)
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+
+        if (!Guid.TryParse(userIdString, out var userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var command = new UpdateProfileCommand(
+            userId,
+            request.Nome,
+            request.Email,
+            request.SenhaAtual,
+            request.NovaSenha,
+            request.ConfirmarNovaSenha);
+
+        var result = await _sender.Send(command, cancellationToken);
+
+        return Ok(new { Id = result });
+    }
+
+    [HttpGet("profile")]
+    [ProducesResponseType(typeof(GetUserProfileResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetUserProfile(CancellationToken cancellationToken)
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+
+        if (!Guid.TryParse(userIdString, out var userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var query = new GetUserProfileQuery(userId);
+        var result = await _sender.Send(query, cancellationToken);
 
         return Ok(result);
     }
@@ -245,6 +287,13 @@ public class EvaluateCvDto
     public bool Liked { get; set; }
     public string? Feedback { get; set; }
 }
+
+public record UpdateProfileRequest(
+    string? Nome,
+    string? Email,
+    string? SenhaAtual,
+    string? NovaSenha,
+    string? ConfirmarNovaSenha);
 
 public record SavePreferencesRequest(List<string> Skills, string Level, string Area);
 public record GenerateCvRequest(Guid JobId);
