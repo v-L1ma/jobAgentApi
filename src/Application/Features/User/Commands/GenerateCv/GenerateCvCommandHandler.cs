@@ -183,11 +183,25 @@ public sealed class GenerateCvCommandHandler : ICommandHandler<GenerateCvCommand
             return "vaga";
         }
 
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var sanitized = new string(value
-            .Select(ch => invalidChars.Contains(ch) ? '-' : ch)
-            .ToArray());
+        var normalizedString = value.Normalize(NormalizationForm.FormD);
+        var stringBuilder = new StringBuilder();
 
-        return sanitized.Replace(' ', '-').ToLowerInvariant();
+        foreach (var c in normalizedString)
+        {
+            var unicodeCategory = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(c);
+            if (unicodeCategory != System.Globalization.UnicodeCategory.NonSpacingMark)
+            {
+                stringBuilder.Append(c);
+            }
+        }
+
+        var withoutAccents = stringBuilder.ToString().Normalize(NormalizationForm.FormC);
+
+        var sanitized = withoutAccents.Replace(' ', '-').ToLowerInvariant();
+        
+        sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, @"[^a-z0-9\-]", "");
+        sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, @"-+", "-");
+
+        return sanitized.Trim('-');
     }
 }
