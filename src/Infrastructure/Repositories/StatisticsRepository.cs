@@ -68,7 +68,8 @@ internal sealed class StatisticsRepository : IStatisticsRepository
         var jobsByPlatformSql = @"
             WITH UserJobs AS (
                 SELECT DISTINCT j.""Id"", j.""Title"", j.""Description"", j.""Url"", 
-                       j.""IsApplied"", j.""Status"", j.""PlataformJobId"", j.""CreatedAt""
+                       j.""IsApplied"", j.""Status"", j.""PlataformJobId"", j.""CreatedAt"",
+                       j.""Platform""
                 FROM ""Jobs"" j
                 INNER JOIN ""UserSearchQueries"" usq ON usq.""UserId"" = {0}
                 INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
@@ -80,9 +81,10 @@ internal sealed class StatisticsRepository : IStatisticsRepository
             )
             SELECT
                 CASE
-                    WHEN ""PlataformJobId"" ILIKE '%linkedin%' THEN 'LinkedIn'
-                    WHEN ""PlataformJobId"" ILIKE '%greenhouse%' THEN 'Greenhouse'
-                    WHEN ""PlataformJobId"" ILIKE '%gupy%' THEN 'Gupy'
+                    WHEN ""Platform"" ILIKE '%linkedin%' THEN 'LinkedIn'
+                    WHEN ""Platform"" ILIKE '%greenhouse%' THEN 'Greenhouse'
+                    WHEN ""Platform"" ILIKE '%gupy%' THEN 'Gupy'
+                    WHEN ""Platform"" ILIKE '%vagascombr%' THEN 'Vagas.com.br'
                     ELSE 'Other'
                 END as ""Platform"",
                 COUNT(*)::int as ""Count""
