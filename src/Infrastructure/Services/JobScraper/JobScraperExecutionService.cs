@@ -303,12 +303,6 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                     existingJob.Platform = platform.ToString();
                 }
 
-                existingJob.Status = "skipped";
-                existingJob.LastModifiedBy = "job-scraper";
-                existingJob.LastModifiedAt = DateTime.UtcNow;
-                await jobRepository.UpdateAsync(existingJob, cancellationToken);
-                await jobRepository.SaveChangesAsync(cancellationToken);
-
                 counters.MarkSkipped();
                 _logger.LogWarning(
                     "[{Platform}] Job SKIPPED reason=already_exists jobId={JobId} title={Title} url={Url}",
