@@ -125,6 +125,18 @@ public class UserRepository : IUserRepository
         return result.Succeeded;
     }
 
+    public async Task<bool> ChangePasswordAsync(DomainApplicationUser user, string currentPassword, string newPassword)
+    {
+        var identityUser = await FindIdentityUserAsync(user);
+        if (identityUser is null)
+        {
+            return false;
+        }
+
+        var result = await _userManager.ChangePasswordAsync(identityUser, currentPassword, newPassword);
+        return result.Succeeded;
+    }
+
     public async Task<string> GeneratePasswordResetTokenAsync(DomainApplicationUser user)
     {
         var identityUser = await FindIdentityUserAsync(user)

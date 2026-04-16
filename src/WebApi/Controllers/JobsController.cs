@@ -1,5 +1,6 @@
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobById;
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobs;
+using jobAgentApi.Application.Features.Jobs.Queries.GetJobsAsync;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -20,6 +21,38 @@ public class JobsController : ControllerBase
         _sender = sender;
     }
 
+    /// <summary>
+    /// Busca vagas com scraping assíncrono e polling.
+    /// Retorna status parcial quando o scraping ainda está em andamento.
+    /// </summary>
+    [HttpGet("search")]
+    [ProducesResponseType(typeof(JobSearchResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetJobsAsync(
+        [FromQuery] string? query,
+        [FromQuery] string? stack,
+        [FromQuery] string? location,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+        Guid.TryParse(userIdStr, out Guid userId);
+
+        var combinedQuery = string.Join(
+            " ",
+            new[] { query, stack, location }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim()));
+
+        var effectiveQuery = string.IsNullOrWhiteSpace(combinedQuery) ? null : combinedQuery;
+        
+        var searchQuery = new GetJobsAsyncQuery(effectiveQuery, page, pageSize, userId);
+        var result = await _sender.Send(searchQuery);
+        return Ok(result);
+    }
+
     [HttpGet]
     public async Task<IActionResult> GetJobs(
         [FromQuery] string? stack,
@@ -28,6 +61,9 @@ public class JobsController : ControllerBase
         [FromQuery] int pageSize = 10,
         [FromQuery] bool triggerScraper = false)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 50);
+
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
         Guid.TryParse(userIdStr, out Guid userId);
         var query = new GetJobsQuery(stack, location, page, pageSize, userId, triggerScraper);

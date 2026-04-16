@@ -8,8 +8,7 @@ public interface IJobRepository
     Task<Job?> GetByPlataformJobIdOrUrlAsync(string plataformJobId, string url, CancellationToken cancellationToken = default);
     Task<int> CountJobsCreatedTodayAsync(DateTime dayStart, DateTime nextDay, CancellationToken cancellationToken = default);
     Task<(List<Job> Items, int TotalCount)> GetPagedAsync(
-        string? stack,
-        string? location,
+        string? query,
         Guid? userId,
         int page,
         int pageSize,

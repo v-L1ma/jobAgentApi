@@ -84,7 +84,12 @@ public sealed class GenerateCvCommandHandler : ICommandHandler<GenerateCvCommand
         {
             Id = Guid.NewGuid(),
             UserId = request.UserId,
-            UrlFile = fileUrl
+            UrlFile = fileUrl,
+            CreatedAt = DateTime.UtcNow,
+            Active = true,
+            LastModifiedAt = DateTime.UtcNow,
+            LastModifiedBy = request.UserId.ToString(),
+            CreatedBy = request.UserId.ToString()
         };
 
         await generatedCvRepository.AddAsync(generatedCv);

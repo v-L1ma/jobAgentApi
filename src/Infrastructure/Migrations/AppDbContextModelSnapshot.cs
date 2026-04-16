@@ -237,6 +237,10 @@ namespace jobAgentApi.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text");
@@ -577,6 +581,9 @@ namespace jobAgentApi.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text[]");
 
+                    b.Property<DateTime>("LastExecutedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("LastModifiedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -695,6 +702,12 @@ namespace jobAgentApi.Infrastructure.Migrations
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("LimitedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("SavedJobsCount")
+                        .HasColumnType("integer");
 
                     b.HasKey("UserId", "SearchQueryId");
 

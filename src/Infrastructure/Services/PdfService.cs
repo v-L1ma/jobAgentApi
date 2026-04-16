@@ -166,24 +166,37 @@ public partial class PdfService : IPdfService
                         {
                             column.Spacing(12);
 
+                            var skills = generatedCv.Skills?
+                                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                                .Select(static value => value!.Trim())
+                                .ToList() ?? [];
+
+                            var experiencias = generatedCv.Experiencias ?? [];
+                            var educacao = generatedCv.Educacao ?? [];
+
                             if (!string.IsNullOrWhiteSpace(generatedCv.Resumo))
                             {
                                 column.Item().Text("Resumo").SemiBold().FontSize(13);
                                 column.Item().Text(generatedCv.Resumo!).FontSize(11);
                             }
 
-                            if (generatedCv.Skills.Count > 0)
+                            if (skills.Count > 0)
                             {
                                 column.Item().Text("Skills").SemiBold().FontSize(13);
-                                column.Item().Text(string.Join(" | ", generatedCv.Skills)).FontSize(11);
+                                column.Item().Text(string.Join(" | ", skills)).FontSize(11);
                             }
 
-                            if (generatedCv.Experiencias.Count > 0)
+                            if (experiencias.Count > 0)
                             {
                                 column.Item().Text("Experiencias").SemiBold().FontSize(13);
 
-                                foreach (var experiencia in generatedCv.Experiencias)
+                                foreach (var experiencia in experiencias)
                                 {
+                                    if (experiencia is null)
+                                    {
+                                        continue;
+                                    }
+
                                     var cargoEmpresa = string.Join(" - ", new[] { experiencia.Cargo, experiencia.Empresa }
                                         .Where(static value => !string.IsNullOrWhiteSpace(value)));
                                     if (!string.IsNullOrWhiteSpace(cargoEmpresa))
@@ -205,20 +218,25 @@ public partial class PdfService : IPdfService
                                 }
                             }
 
-                            if (generatedCv.Educacao.Count > 0)
+                            if (educacao.Count > 0)
                             {
                                 column.Item().Text("Educacao").SemiBold().FontSize(13);
 
-                                foreach (var educacao in generatedCv.Educacao)
+                                foreach (var item in educacao)
                                 {
-                                    var cursoInstituicao = string.Join(" - ", new[] { educacao.Curso, educacao.Instituicao }
+                                    if (item is null)
+                                    {
+                                        continue;
+                                    }
+
+                                    var cursoInstituicao = string.Join(" - ", new[] { item.Curso, item.Instituicao }
                                         .Where(static value => !string.IsNullOrWhiteSpace(value)));
                                     if (!string.IsNullOrWhiteSpace(cursoInstituicao))
                                     {
                                         column.Item().Text(cursoInstituicao).SemiBold().FontSize(11);
                                     }
 
-                                    var periodo = string.Join(" a ", new[] { educacao.DataInicio, educacao.DataFim }
+                                    var periodo = string.Join(" a ", new[] { item.DataInicio, item.DataFim }
                                         .Where(static value => !string.IsNullOrWhiteSpace(value)));
                                     if (!string.IsNullOrWhiteSpace(periodo))
                                     {
@@ -401,13 +419,13 @@ public partial class PdfService : IPdfService
         public string? Resumo { get; set; }
 
         [JsonPropertyName("skills")]
-        public List<string> Skills { get; set; } = [];
+        public List<string?>? Skills { get; set; } = [];
 
         [JsonPropertyName("experiencias")]
-        public List<GeneratedCvExperience> Experiencias { get; set; } = [];
+        public List<GeneratedCvExperience?>? Experiencias { get; set; } = [];
 
         [JsonPropertyName("educacao")]
-        public List<GeneratedCvEducation> Educacao { get; set; } = [];
+        public List<GeneratedCvEducation?>? Educacao { get; set; } = [];
     }
 
     private sealed class GeneratedCvExperience

@@ -39,6 +39,18 @@ public sealed class UploadCvCommandHandler : ICommandHandler<UploadCvCommand, st
 
         try
         {
+            var userCvRepository = _unitOfWork.GetRepository<UserCv>();
+
+            var usersCvs = await userCvRepository.GetAllAsync();
+            var userCV = usersCvs.FirstOrDefault(cv => cv.UserId == request.UserId);
+
+            if(userCV != null && userCV.LastModifiedAt.AddMinutes(5) >= DateTime.UtcNow )
+            {
+                var timezone = TimeZoneInfo.FindSystemTimeZoneById("America/Sao_Paulo");
+                var dataLocal = TimeZoneInfo.ConvertTimeFromUtc(userCV.LastModifiedAt.AddMinutes(5), timezone);
+                throw new DomainException($"Um curriculo já foi enviado a menos de 5 minutos, aguarde até {dataLocal}", 400);
+            }
+
             // 1. Extrair texto do PDF para processamentos futuros
             var extractedText = await _pdfService.ExtractTextAsync(streamToProcess);
 
@@ -57,20 +69,34 @@ public sealed class UploadCvCommandHandler : ICommandHandler<UploadCvCommand, st
 
             // 2. Upload para o Storage (Supabase)
             var folder = $"cvs/{request.UserId}";
-            var fileName = $"{Guid.NewGuid()}-{request.FileName}";
+            var fileName = $"{request.FileName}";
             var path = $"{folder}/{fileName}";
 
             var fileUrl = await _storageService.UploadFileAsync(streamToProcess, path, request.ContentType);
 
             // 3. Salvar registro no banco de dados
-            var userCvRepository = _unitOfWork.GetRepository<UserCv>();
+            if (userCV != null)
+            {
+                userCV.UrlFile = fileUrl;
+                userCV.ExtractedText = normalizedText;
+                userCV.LastModifiedAt = DateTime.UtcNow;
+                userCV.LastModifiedBy = request.UserId.ToString();
+                await userCvRepository.UpdateAsync(userCV);
+                await _unitOfWork.SaveChangesAsync(cancellationToken);
+                return fileUrl;
+            }
 
             var userCv = new UserCv
             {
                 Id = Guid.NewGuid(),
                 UserId = request.UserId,
                 UrlFile = fileUrl,
-                ExtractedText = normalizedText
+                ExtractedText = normalizedText,
+                CreatedAt = DateTime.UtcNow,
+                LastModifiedAt = DateTime.UtcNow,
+                Active = true,
+                LastModifiedBy = request.UserId.ToString(),
+                CreatedBy = request.UserId.ToString()
             };
 
             await userCvRepository.AddAsync(userCv);

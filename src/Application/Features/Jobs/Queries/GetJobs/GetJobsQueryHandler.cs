@@ -31,9 +31,16 @@ public sealed class GetJobsQueryHandler : IQueryHandler<GetJobsQuery, PagedJobsR
 
         var jobRepository = _unitOfWork.GetJobRepository();
 
+        var combinedQuery = string.Join(
+            " ",
+            new[] { request.Stack, request.Location }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim()));
+
+        var query = string.IsNullOrWhiteSpace(combinedQuery) ? null : combinedQuery;
+
         var (items, totalCount) = await jobRepository.GetPagedAsync(
-            request.Stack,
-            request.Location,
+            query,
             request.UserId,
             request.Page,
             request.PageSize,
@@ -41,7 +48,13 @@ public sealed class GetJobsQueryHandler : IQueryHandler<GetJobsQuery, PagedJobsR
 
         var totalPages = totalCount > 0 ? (int)Math.Ceiling(totalCount / (double)request.PageSize) : 0;
 
-        var responseItems = items.Select(j => new JobListItemResponse(j.Id, j.Title, j.Description, j.Url, j.IsApplied)).ToList();
+        var responseItems = items.Select(j => new JobListItemResponse(
+            j.Id,
+            j.Title,
+            j.Description,
+            j.Url,
+            j.IsApplied,
+            j.Platform)).ToList();
 
         return new PagedJobsResponse(responseItems, totalCount, request.Page, totalPages, scraperResult);
     }

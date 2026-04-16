@@ -6,13 +6,19 @@ services:
       dockerfile: src/WebApi/Dockerfile
     ports:
       - "5000:80"
+    mem_limit: 512m
+    mem_reservation: 420m
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:80
+      - DOTNET_GCHeapHardLimitPercent=70
+      - DOTNET_GCServer=0
+      - DOTNET_GCConcurrent=1
+      - DOTNET_TieredPGO=1
+      - DOTNET_TC_QuickJitForLoops=1
       - ConnectionStrings__DefaultConnection=Host=host.docker.internal;Port=5432;Database=jobAgent;Username=postgres;Password=admin;
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      
   prometheus:
     image: prom/prometheus
     volumes:

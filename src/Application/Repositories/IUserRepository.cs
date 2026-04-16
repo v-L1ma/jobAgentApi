@@ -7,6 +7,7 @@ namespace jobAgentApi.Application.Repositories
         Task<ApplicationUser?> GetByEmailAsync(string email);
         Task<bool> CheckPasswordAsync(ApplicationUser user, string password);
         Task<bool> CreateWithPasswordAsync(ApplicationUser user, string password);
+        Task<bool> ChangePasswordAsync(ApplicationUser user, string currentPassword, string newPassword);
         Task<string> GeneratePasswordResetTokenAsync(ApplicationUser user);
     }
 }

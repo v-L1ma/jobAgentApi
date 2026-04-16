@@ -28,7 +28,7 @@ internal sealed class JobRepository : IJobRepository
     public async Task<Job?> GetByPlataformJobIdOrUrlAsync(string plataformJobId, string url, CancellationToken cancellationToken = default)
     {
         var sql = @"
-            SELECT ""Id"", ""PlataformJobId"", ""Title"", ""Description"", ""Url"", ""IsApplied"", ""Status"", 
+            SELECT ""Id"", ""PlataformJobId"", ""Platform"", ""Title"", ""Description"", ""Url"", ""IsApplied"", ""Status"", 
                    ""Active"", ""CreatedBy"", ""CreatedAt"", ""LastModifiedBy"", ""LastModifiedAt""
             FROM ""Jobs""
             WHERE ""PlataformJobId"" = @p0 OR ""Url"" = @p1
@@ -86,8 +86,7 @@ internal sealed class JobRepository : IJobRepository
     }
 
     public async Task<(List<Job> Items, int TotalCount)> GetPagedAsync(
-        string? stack,
-        string? location,
+        string? query,
         Guid? userId,
         int page,
         int pageSize,
@@ -99,41 +98,55 @@ internal sealed class JobRepository : IJobRepository
 
         var hasUserFilter = userId.HasValue && userId.Value != Guid.Empty;
 
-        // Base FROM + JOIN condicional
+        // Base FROM
         var fromSql = @"FROM ""Jobs"" j";
-        if (hasUserFilter)
-        {
-            fromSql += $@" INNER JOIN ""UserPreferences"" up ON up.""UserId"" = @p{paramIndex}";
-            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", userId.Value));
-            paramIndex++;
-        }
 
         // Cláusulas WHERE
         var whereParts = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(stack))
+        if (!string.IsNullOrWhiteSpace(query))
         {
             whereParts.Add($@"(j.""Title"" ILIKE @p{paramIndex} OR j.""Description"" ILIKE @p{paramIndex})");
-            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{stack}%"));
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{query}%"));
             paramIndex++;
         }
 
-        if (!string.IsNullOrWhiteSpace(location))
-        {
-            whereParts.Add($@"j.""Description"" ILIKE @p{paramIndex}");
-            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{location}%"));
-            paramIndex++;
-        }
-
+        // Filtra por match nas keywords da search query do usuário
         if (hasUserFilter)
         {
-            whereParts.Add($@"(j.""Title"" ILIKE '%' || up.""Level"" || '%' OR j.""Description"" ILIKE '%' || up.""Level"" || '%')");
+            var userFilterId = userId!.Value;
+
+            // Só aplica filtro de keyword se o usuário tiver keywords válidas.
+            // Caso não tenha, esse bloco vira verdadeiro e não bloqueia o retorno de vagas.
+            whereParts.Add($@"(
+                NOT EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND sq.""Keywords"" IS NOT NULL
+                      AND array_length(sq.""Keywords"", 1) > 0
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    INNER JOIN LATERAL unnest(sq.""Keywords"") AS kw ON TRUE
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND (
+                          j.""Title"" ILIKE '%' || kw || '%'
+                          OR j.""Description"" ILIKE '%' || kw || '%'
+                      )
+                )
+            )");
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", userFilterId));
+            paramIndex++;
         }
 
         var whereSql = whereParts.Count > 0 ? " WHERE " + string.Join(" AND ", whereParts) : string.Empty;
 
         // Colunas SELECT
-        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Title"", j.""Description"", j.""Url"",
+        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Platform"", j.""Title"", LEFT(COALESCE(j.""Description"", ''), 2000) AS ""Description"", j.""Url"",
                    j.""IsApplied"", j.""Status"", j.""Active"", j.""CreatedBy"", j.""CreatedAt"",
                    j.""LastModifiedBy"", j.""LastModifiedAt""";
 
@@ -225,6 +238,7 @@ internal sealed class JobRepository : IJobRepository
         {
             Id = reader.GetGuid(reader.GetOrdinal("Id")),
             PlataformJobId = reader.GetString(reader.GetOrdinal("PlataformJobId")),
+            Platform = reader.GetString(reader.GetOrdinal("Platform")),
             Title = reader.GetString(reader.GetOrdinal("Title")),
             Description = reader.GetString(reader.GetOrdinal("Description")),
             Url = reader.GetString(reader.GetOrdinal("Url")),

@@ -12,78 +12,106 @@ namespace jobAgentApi.Application.Features.User.Commands.SavePreferences;
 
 public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferencesCommand, Guid>
 {
+    private const int MaxSkillsToProcess = 5;
+    private const int MaxKeywordLength = 30;
+
     private readonly IUnitOfWork _unitOfWork;
     private readonly ISearchQueryService _searchQueryService;
+    private readonly IUserSearchQueryRepository _userSearchQueryRepository;
+    private readonly IKeywordNormalizer _keywordNormalizer;
 
-    public SavePreferencesCommandHandler(IUnitOfWork unitOfWork, ISearchQueryService searchQueryService)
+    public SavePreferencesCommandHandler(
+        IUnitOfWork unitOfWork, 
+        ISearchQueryService searchQueryService,
+        IUserSearchQueryRepository userSearchQueryRepository,
+        IKeywordNormalizer keywordNormalizer)
     {
         _unitOfWork = unitOfWork;
         _searchQueryService = searchQueryService;
+        _userSearchQueryRepository = userSearchQueryRepository;
+        _keywordNormalizer = keywordNormalizer;
     }
 
     public async Task<Guid> Handle(SavePreferencesCommand request, CancellationToken cancellationToken)
     {
-        var preferencesRepository = _unitOfWork.GetRepository<UserPreferences>();
-        
-        var allPreferences = await preferencesRepository.GetAllAsync();
-        var existingPreferences = allPreferences.FirstOrDefault(p => p.UserId == request.UserId);
+        var searchQueryRepository = _unitOfWork.GetRepository<SearchQuery>();
+        var userSearchQueryRepository = _unitOfWork.GetRepository<UserSearchQuery>();
 
-        if (existingPreferences is not null)
+        var skillsToProcess = request.Skills?
+            .Where(skill => !string.IsNullOrWhiteSpace(skill))
+            .Select(skill => skill.Trim())
+            .ToList() ?? new List<string>();
+
+        if (skillsToProcess.Count > MaxSkillsToProcess)
         {
-            existingPreferences.Skills = request.Skills;
-            existingPreferences.Level = request.Level;
-            existingPreferences.Area = request.Area;
-            existingPreferences.LastModifiedAt = DateTime.UtcNow;
-
-            await preferencesRepository.UpdateAsync(existingPreferences);
+            throw new DomainException($"O limite é de {MaxSkillsToProcess} palavras-chave por usuário.");
         }
-        else
+
+        if (skillsToProcess.Any(skill => skill.Length > MaxKeywordLength))
         {
-            existingPreferences = new UserPreferences
+            throw new DomainException($"Cada palavra-chave pode ter no máximo {MaxKeywordLength} caracteres.");
+        }
+
+        var normalizedKeywords = _keywordNormalizer.Normalize(skillsToProcess);
+
+        if (!normalizedKeywords.Any())
+        {
+            throw new DomainException("Pelo menos uma palavra-chave válida é obrigatória para salvar as preferências de busca.");
+        }
+
+        var level = request.Level?.Trim() ?? string.Empty;
+        var area = request.Area?.Trim() ?? string.Empty;
+        var queryStr = BuildQueryString(skillsToProcess, level);
+        var normalizedHash = BuildNormalizedHash(normalizedKeywords);
+
+        var currentSearchQueryId = await _userSearchQueryRepository.GetUserCurrentSearchQueryIdAsync(request.UserId, cancellationToken);
+
+        SearchQuery resultQuery;
+
+        if (currentSearchQueryId.HasValue)
+        {
+            var usersCount = await _userSearchQueryRepository.GetUsersCountBySearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
+
+            if (usersCount <= 1)
             {
-                Id = Guid.NewGuid(),
-                UserId = request.UserId,
-                Skills = request.Skills,
-                Level = request.Level,
-                Area = request.Area,
-                CreatedAt = DateTime.UtcNow,
-                Active = true
-            };
+                var currentSearchQuery = await searchQueryRepository.GetByIdAsync(currentSearchQueryId.Value);
 
-            await preferencesRepository.AddAsync(existingPreferences);
-        }
+                if (currentSearchQuery is null)
+                {
+                    await _userSearchQueryRepository.RemoveUserFromSearchQueryAsync(request.UserId, currentSearchQueryId.Value, cancellationToken);
+                    await _userSearchQueryRepository.DeleteOrphanSearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
 
-        // Limitar palavras-chave para o top 5 (Regra: Muitas keywords -> usar somento o top 5)
-        var skillsToProcess = request.Skills?.Take(5).ToList() ?? new List<string>();
+                    resultQuery = CreateSearchQuery(queryStr, normalizedKeywords, level, area, normalizedHash);
+                    await searchQueryRepository.AddAsync(resultQuery);
 
-        var keywordExpression = string.Join(" OR ", skillsToProcess.Where(skill => !string.IsNullOrWhiteSpace(skill)));
-        var queryParts = new List<string>();
+                    await userSearchQueryRepository.AddAsync(new UserSearchQuery
+                    {
+                        UserId = request.UserId,
+                        SearchQueryId = resultQuery.Id,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+                else
+                {
+                    currentSearchQuery.Query = queryStr;
+                    currentSearchQuery.Keywords = normalizedKeywords;
+                    currentSearchQuery.Level = level;
+                    currentSearchQuery.Area = area;
+                    currentSearchQuery.NormalizedHash = normalizedHash;
+                    currentSearchQuery.LastModifiedAt = DateTime.UtcNow;
 
-        if (!string.IsNullOrWhiteSpace(keywordExpression))
-        {
-            queryParts.Add($"({keywordExpression})");
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Level))
-        {
-            queryParts.Add($"({request.Level})");
-        }
-
-        var queryStr = string.Join(" AND ", queryParts);
-
-        // Phase 4 & 6: Fluxo completo -> normaliza, busca, tenta match, cria ou reutiliza
-        var resultQuery = await _searchQueryService.ProcessQueryAsync(queryStr, skillsToProcess, request.Level, request.Area);
-
-        // Phase 5: Task 11 / Task 12 - Relacionar usuário sem duplicidade
-        if (resultQuery != null)
-        {
-            var userSearchQueryRepository = _unitOfWork.GetRepository<UserSearchQuery>();
-            var allUserSearchQueries = await userSearchQueryRepository.GetAllAsync();
-            
-            var alreadyLinked = allUserSearchQueries.Any(usq => usq.UserId == request.UserId && usq.SearchQueryId == resultQuery.Id);
-
-            if (!alreadyLinked)
+                    await searchQueryRepository.UpdateAsync(currentSearchQuery);
+                    resultQuery = currentSearchQuery;
+                }
+            }
+            else
             {
+                await _userSearchQueryRepository.RemoveUserFromSearchQueryAsync(request.UserId, currentSearchQueryId.Value, cancellationToken);
+                await _userSearchQueryRepository.DeleteOrphanSearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
+
+                resultQuery = CreateSearchQuery(queryStr, normalizedKeywords, level, area, normalizedHash);
+                await searchQueryRepository.AddAsync(resultQuery);
+
                 await userSearchQueryRepository.AddAsync(new UserSearchQuery
                 {
                     UserId = request.UserId,
@@ -92,9 +120,61 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
                 });
             }
         }
+        else
+        {
+            // Mantém reaproveitamento de queries similares quando o usuário ainda não possui vínculo.
+            resultQuery = await _searchQueryService.ProcessQueryAsync(queryStr, skillsToProcess, level, area);
+
+            await userSearchQueryRepository.AddAsync(new UserSearchQuery
+            {
+                UserId = request.UserId,
+                SearchQueryId = resultQuery.Id,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return existingPreferences.Id;
+        return resultQuery.Id;
+    }
+
+    private static string BuildQueryString(IEnumerable<string> skills, string level)
+    {
+        var keywordExpression = string.Join(" OR ", skills.Where(skill => !string.IsNullOrWhiteSpace(skill)));
+        var queryParts = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(keywordExpression))
+        {
+            queryParts.Add($"({keywordExpression})");
+        }
+
+        if (!string.IsNullOrWhiteSpace(level))
+        {
+            queryParts.Add($"({level})");
+        }
+
+        return string.Join(" AND ", queryParts);
+    }
+
+    private static string BuildNormalizedHash(IEnumerable<string> normalizedKeywords)
+    {
+        return string.Join("-", normalizedKeywords.OrderBy(keyword => keyword, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static SearchQuery CreateSearchQuery(string query, List<string> normalizedKeywords, string level, string area, string normalizedHash)
+    {
+        return new SearchQuery
+        {
+            Id = Guid.NewGuid(),
+            Query = query,
+            Keywords = normalizedKeywords,
+            Level = level,
+            Area = area,
+            NormalizedHash = normalizedHash,
+            Active = true,
+            CreatedAt = DateTime.UtcNow,
+            LastModifiedAt = DateTime.UtcNow,
+            LastExecutedAt = DateTime.MinValue
+        };
     }
 }

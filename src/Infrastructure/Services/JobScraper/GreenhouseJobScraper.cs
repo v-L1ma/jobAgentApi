@@ -140,11 +140,23 @@ internal sealed class GreenhouseJobScraper : IGreenhouseJobScraper
                 {
                     // Filter by query
                     if (!MatchesQuery(job, normalizedQuery))
+                    {
+                        _logger.LogWarning(
+                            "[Greenhouse] Job SKIPPED reason=query_mismatch jobId={JobId} company={Company}",
+                            job.Id,
+                            company);
                         continue;
+                    }
 
                     // Filter by location if specified
                     if (desiredLocations.Count > 0 && !MatchesLocation(job, desiredLocations))
+                    {
+                        _logger.LogWarning(
+                            "[Greenhouse] Job SKIPPED reason=location_mismatch jobId={JobId} company={Company}",
+                            job.Id,
+                            company);
                         continue;
+                    }
 
                     var scraped = new GreenhouseScrapedJob(
                         job.Id.ToString(),
@@ -154,9 +166,16 @@ internal sealed class GreenhouseJobScraper : IGreenhouseJobScraper
                         ExtractLocation(job),
                         null); // Description not extracted for efficiency
 
+                    _logger.LogWarning(
+                        "[Greenhouse] Job FOUND jobId={JobId} title={Title} company={Company}",
+                        scraped.Id,
+                        scraped.Title,
+                        scraped.Company);
+
                     var shouldContinue = await onJob(scraped);
                     if (!shouldContinue)
                     {
+                        _logger.LogWarning("[Greenhouse] Job SKIPPED reason=callback_requested_stop jobId={JobId}", scraped.Id);
                         return;
                     }
                 }

@@ -10,7 +10,7 @@ using Microsoft.IdentityModel.Tokens;
 using jobAgentApi.Infrastructure.Utils;
 
 Log.Logger = new LoggerConfiguration()
-    .Enrich.FromLogContext()
+    .MinimumLevel.Warning()
     .WriteTo.Console()
     .CreateLogger();
 
@@ -23,11 +23,13 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddProblemDetails();
 
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? new[] { "http://localhost:3001" };
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins("http://localhost:3001")
+        policy.WithOrigins(allowedOrigins)
               .AllowAnyMethod()
               .AllowAnyHeader();
     });
@@ -40,13 +42,22 @@ builder.Services.AddOpenTelemetry()
     .WithTracing(tracing =>
     {
         tracing.AddAspNetCoreInstrumentation();
-        tracing.AddConsoleExporter();
+
+        if (builder.Environment.IsDevelopment())
+        {
+            tracing.AddConsoleExporter();
+        }
     })
     .WithMetrics(metrics =>
     {
         metrics.AddAspNetCoreInstrumentation();
         metrics.AddHttpClientInstrumentation();
-        metrics.AddRuntimeInstrumentation();
+
+        if (builder.Environment.IsDevelopment())
+        {
+            metrics.AddRuntimeInstrumentation();
+        }
+
         metrics.AddPrometheusExporter();
     });
 
