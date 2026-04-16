@@ -22,43 +22,55 @@ public sealed class CvAiService : ICvAiService
     public async Task<string> GenerateTailoredCvAsync(string prompt, CancellationToken cancellationToken = default)
     {
         var aiSection = _configuration.GetSection("AiSettings");
-
         var apiKey = aiSection["ApiKey"];
-        var model = aiSection["Model"] ?? "gemini-3.1-flash-lite-preview";
 
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             throw new DomainException("AiSettings:ApiKey não configurado.", 500);
         }
 
-        try
+        string[] fallbackModels = new[]
         {
-            var client = new Client(apiKey: apiKey);
+            "gemini-3.1-flash-lite-preview",
+            "gemma-4-31b-it",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash"
+        };
 
-            var parameters = new GenerateContentConfig
+        var client = new Client(apiKey: apiKey);
+
+        var parameters = new GenerateContentConfig
+        {
+            Temperature = 0.2f
+        };
+
+        foreach (var model in fallbackModels)
+        {
+            try
             {
-                Temperature = 0.2f
-            };
+                var response = await client.Models.GenerateContentAsync(
+                    model: model,
+                    contents: prompt,
+                    config: parameters
+                );
 
-            var response = await client.Models.GenerateContentAsync(
-                model: model,
-                contents: prompt,
-                config: parameters
-            );
+                var responseText = response.Text;
 
-            var responseText = response.Text;
+                if (!string.IsNullOrWhiteSpace(responseText))
+                {
+                    return responseText.Trim();
+                }
 
-            if (string.IsNullOrWhiteSpace(responseText))
-            {
-                throw new DomainException("A IA retornou conteúdo vazio.", 502);
+                _logger.LogWarning("O modelo {Model} retornou conteúdo vazio. Tentando o próximo...", model);
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Falha ao request no modelo {Model}. Tentando o próximo...", model);
+            }
+        }
 
-            return responseText.Trim();
-        }
-        catch (Exception ex) when (ex is not DomainException)
-        {
-            _logger.LogError(ex, "Gemini AI request failed.");
-            throw new DomainException("Falha ao gerar currículo com a IA, tente novamente em alguns instantes.", 502);
-        }
+        _logger.LogError("Todos os modelos de fallback do Gemini falharam.");
+        throw new DomainException("Falha ao gerar currículo com a IA, tente novamente em alguns instantes.", 502);
     }
 }
