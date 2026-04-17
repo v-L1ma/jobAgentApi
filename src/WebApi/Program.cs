@@ -103,9 +103,13 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
+builder.Services.AddHealthChecks();
+
 var app = builder.Build();
 
 app.UseExceptionHandler();
+
+app.MapHealthChecks("/health");
 
 if (app.Environment.IsDevelopment())
 {
