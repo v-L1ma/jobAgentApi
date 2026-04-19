@@ -28,6 +28,7 @@ public class TokenService : ITokenService
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
 			new Claim(JwtRegisteredClaimNames.Name, user.Name),
             new Claim(JwtRegisteredClaimNames.Email, user.Email),
+			new Claim("isFirstAccess", (!user.OnboardingCompleted).ToString().ToLowerInvariant()),
 		};
 
         int.TryParse(jwtSettings["ExpirationTimeInMinutes"], out var expirationTime);

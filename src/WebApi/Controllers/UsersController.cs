@@ -3,6 +3,7 @@ using System.Globalization;
 using jobAgentApi.Application.Features.User.Commands.GenerateCv;
 using jobAgentApi.Application.Features.User.Commands.UploadCv;
 using jobAgentApi.Application.Features.User.Commands.SavePreferences;
+using jobAgentApi.Application.Features.User.Commands.CompleteOnboarding;
 using jobAgentApi.Application.Features.User.Queries.GetPreferences;
 using jobAgentApi.Application.Features.User.Queries.GetUserStatistics;
 using jobAgentApi.Application.Features.User.Queries.GetUserCv;
@@ -62,6 +63,22 @@ public class UsersController : ControllerBase
 
         var query = new GetPreferencesQuery(userId);
         var result = await _sender.Send(query);
+
+        return Ok(result);
+    }
+
+    [HttpPost("onboarding/complete")]
+    public async Task<IActionResult> CompleteOnboarding(CancellationToken cancellationToken)
+    {
+        var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+
+        if (!Guid.TryParse(userIdString, out var userId))
+        {
+            return Unauthorized("Usuário inválido.");
+        }
+
+        var command = new CompleteOnboardingCommand(userId);
+        var result = await _sender.Send(command, cancellationToken);
 
         return Ok(result);
     }

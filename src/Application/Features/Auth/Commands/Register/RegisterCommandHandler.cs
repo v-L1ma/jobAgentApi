@@ -28,6 +28,7 @@ namespace jobAgentApi.Application.Features.Auth.Commands.Register
                 Id = Guid.NewGuid(),
                 Name = request.Name,
                 Email = request.Email,
+                OnboardingCompleted = false,
                 // CPF não está no comando de registro atual, deixamos em branco ou ajustamos se necessário
             };
 

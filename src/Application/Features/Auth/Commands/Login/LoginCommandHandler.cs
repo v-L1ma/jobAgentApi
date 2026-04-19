@@ -45,8 +45,9 @@ namespace jobAgentApi.Application.Features.Auth.Commands.Login
 
             var token = _tokenService.GenerateToken(user);
             var refreshToken = _tokenService.GenerateRefreshToken(user);
+            var isFirstAccess = !user.OnboardingCompleted;
 
-            return new LoginCommandResponse(token, refreshToken);
+            return new LoginCommandResponse(token, refreshToken, isFirstAccess);
         }
     }
 }

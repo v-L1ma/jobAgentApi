@@ -47,8 +47,9 @@ namespace jobAgentApi.Application.Features.Auth.Commands.RefreshToken
             // 5. Gerar novo par de tokens
             var newToken = _tokenService.GenerateToken(user);
             var newRefreshToken = _tokenService.GenerateRefreshToken(user);
+            var isFirstAccess = !user.OnboardingCompleted;
 
-            return new RefreshTokenResponse(newToken, newRefreshToken);
+            return new RefreshTokenResponse(newToken, newRefreshToken, isFirstAccess);
         }
     }
 }
