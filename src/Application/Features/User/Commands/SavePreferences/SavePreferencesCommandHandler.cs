@@ -14,6 +14,7 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
 {
     private const int MaxSkillsToProcess = 5;
     private const int MaxKeywordLength = 30;
+    private const int MaxLevelsToProcess = 4;
 
     private readonly IUnitOfWork _unitOfWork;
     private readonly ISearchQueryService _searchQueryService;
@@ -59,10 +60,25 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
             throw new DomainException("Pelo menos uma palavra-chave válida é obrigatória para salvar as preferências de busca.");
         }
 
-        var level = request.Level?.Trim() ?? string.Empty;
+        var levelsToProcess = request.Levels?
+            .Where(level => !string.IsNullOrWhiteSpace(level))
+            .Select(level => level.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
+
+        if (!levelsToProcess.Any())
+        {
+            throw new DomainException("Selecione pelo menos uma senioridade.");
+        }
+
+        if (levelsToProcess.Count > MaxLevelsToProcess)
+        {
+            throw new DomainException($"Selecione no máximo {MaxLevelsToProcess} senioridades.");
+        }
+
         var area = request.Area?.Trim() ?? string.Empty;
-        var queryStr = BuildQueryString(skillsToProcess, level);
-        var normalizedHash = BuildNormalizedHash(normalizedKeywords);
+        var queryStr = BuildQueryString(skillsToProcess, levelsToProcess);
+        var normalizedHash = BuildNormalizedHash(normalizedKeywords, levelsToProcess);
 
         var currentSearchQueryId = await _userSearchQueryRepository.GetUserCurrentSearchQueryIdAsync(request.UserId, cancellationToken);
 
@@ -81,7 +97,7 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
                     await _userSearchQueryRepository.RemoveUserFromSearchQueryAsync(request.UserId, currentSearchQueryId.Value, cancellationToken);
                     await _userSearchQueryRepository.DeleteOrphanSearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
 
-                    resultQuery = CreateSearchQuery(queryStr, normalizedKeywords, level, area, normalizedHash);
+                    resultQuery = CreateSearchQuery(queryStr, normalizedKeywords, levelsToProcess, area, normalizedHash);
                     await searchQueryRepository.AddAsync(resultQuery);
 
                     await userSearchQueryRepository.AddAsync(new UserSearchQuery
@@ -95,7 +111,7 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
                 {
                     currentSearchQuery.Query = queryStr;
                     currentSearchQuery.Keywords = normalizedKeywords;
-                    currentSearchQuery.Level = level;
+                    currentSearchQuery.Levels = levelsToProcess;
                     currentSearchQuery.Area = area;
                     currentSearchQuery.NormalizedHash = normalizedHash;
                     currentSearchQuery.LastModifiedAt = DateTime.UtcNow;
@@ -109,7 +125,7 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
                 await _userSearchQueryRepository.RemoveUserFromSearchQueryAsync(request.UserId, currentSearchQueryId.Value, cancellationToken);
                 await _userSearchQueryRepository.DeleteOrphanSearchQueryAsync(currentSearchQueryId.Value, cancellationToken);
 
-                resultQuery = CreateSearchQuery(queryStr, normalizedKeywords, level, area, normalizedHash);
+                resultQuery = CreateSearchQuery(queryStr, normalizedKeywords, levelsToProcess, area, normalizedHash);
                 await searchQueryRepository.AddAsync(resultQuery);
 
                 await userSearchQueryRepository.AddAsync(new UserSearchQuery
@@ -123,7 +139,7 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
         else
         {
             // Mantém reaproveitamento de queries similares quando o usuário ainda não possui vínculo.
-            resultQuery = await _searchQueryService.ProcessQueryAsync(queryStr, skillsToProcess, level, area);
+            resultQuery = await _searchQueryService.ProcessQueryAsync(queryStr, skillsToProcess, levelsToProcess, area);
 
             await userSearchQueryRepository.AddAsync(new UserSearchQuery
             {
@@ -138,9 +154,10 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
         return resultQuery.Id;
     }
 
-    private static string BuildQueryString(IEnumerable<string> skills, string level)
+    private static string BuildQueryString(IEnumerable<string> skills, IEnumerable<string> levels)
     {
         var keywordExpression = string.Join(" OR ", skills.Where(skill => !string.IsNullOrWhiteSpace(skill)));
+        var levelExpression = string.Join(" OR ", levels.Where(level => !string.IsNullOrWhiteSpace(level)));
         var queryParts = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(keywordExpression))
@@ -148,27 +165,44 @@ public sealed class SavePreferencesCommandHandler : ICommandHandler<SavePreferen
             queryParts.Add($"({keywordExpression})");
         }
 
-        if (!string.IsNullOrWhiteSpace(level))
+        if (!string.IsNullOrWhiteSpace(levelExpression))
         {
-            queryParts.Add($"({level})");
+            queryParts.Add($"({levelExpression})");
         }
 
         return string.Join(" AND ", queryParts);
     }
 
-    private static string BuildNormalizedHash(IEnumerable<string> normalizedKeywords)
+    private static string BuildNormalizedHash(IEnumerable<string> normalizedKeywords, IEnumerable<string> levels)
     {
-        return string.Join("-", normalizedKeywords.OrderBy(keyword => keyword, StringComparer.OrdinalIgnoreCase));
+        var orderedKeywords = normalizedKeywords
+            .OrderBy(keyword => keyword, StringComparer.OrdinalIgnoreCase);
+
+        var orderedLevels = levels
+            .Where(level => !string.IsNullOrWhiteSpace(level))
+            .Select(level => level.Trim().ToLowerInvariant())
+            .OrderBy(level => level, StringComparer.Ordinal);
+
+        return string.Join("|", new[]
+        {
+            string.Join("-", orderedKeywords),
+            string.Join("-", orderedLevels)
+        });
     }
 
-    private static SearchQuery CreateSearchQuery(string query, List<string> normalizedKeywords, string level, string area, string normalizedHash)
+    private static SearchQuery CreateSearchQuery(
+        string query,
+        List<string> normalizedKeywords,
+        List<string> levels,
+        string area,
+        string normalizedHash)
     {
         return new SearchQuery
         {
             Id = Guid.NewGuid(),
             Query = query,
             Keywords = normalizedKeywords,
-            Level = level,
+            Levels = levels,
             Area = area,
             NormalizedHash = normalizedHash,
             Active = true,

@@ -30,7 +30,7 @@ public sealed class GetPreferencesQueryHandler : IQueryHandler<GetPreferencesQue
         {
             UserId = request.UserId,
             Skills = userSearchQuery.Keywords,
-            Level = userSearchQuery.Level,
+            Levels = userSearchQuery.Levels,
             Area = userSearchQuery.Area
         };
     }

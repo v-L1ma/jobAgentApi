@@ -43,7 +43,7 @@ public class UsersController : ControllerBase
             return Unauthorized("Usuário inválido.");
         }
 
-        var command = new SavePreferencesCommand(request.Skills, request.Level, request.Area, userId);
+        var command = new SavePreferencesCommand(request.Skills, request.Levels, request.Area, userId);
 
         var result = await _sender.Send(command);
 
@@ -295,5 +295,5 @@ public record UpdateProfileRequest(
     string? NovaSenha,
     string? ConfirmarNovaSenha);
 
-public record SavePreferencesRequest(List<string> Skills, string Level, string Area);
+public record SavePreferencesRequest(List<string> Skills, List<string> Levels, string Area);
 public record GenerateCvRequest(Guid JobId);

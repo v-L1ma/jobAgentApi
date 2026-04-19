@@ -8,6 +8,6 @@ public class UserPreferencesDto
 {
     public Guid UserId { get; set; }
     public List<string> Skills { get; set; } = new();
-    public string Level { get; set; } = string.Empty;
+    public List<string> Levels { get; set; } = new();
     public string Area { get; set; } = string.Empty;
 }
