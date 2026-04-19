@@ -48,6 +48,8 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
             var jobRepositoryPaged = _unitOfWork.GetJobRepository();
             var (jobsPaged, totalCountPaged) = await jobRepositoryPaged.GetPagedAsync(
                 request.Query,
+                request.Company,
+                request.Platform,
                 request.UserId,
                 request.Page,
                 request.PageSize,
@@ -60,6 +62,7 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
                 j.Description,
                 j.Url,
                 j.IsApplied,
+                Company: j.Company,
                 Platform: j.Platform)).ToList();
 
             return new JobSearchResponse(
@@ -123,6 +126,8 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
         var jobRepository = _unitOfWork.GetJobRepository();
         var (jobs, totalCount) = await jobRepository.GetPagedAsync(
             request.Query,
+            request.Company,
+            request.Platform,
             request.UserId,
             request.Page,
             request.PageSize,
@@ -135,6 +140,7 @@ public sealed class GetJobsAsyncQueryHandler : IQueryHandler<GetJobsAsyncQuery, 
             j.Description,
             j.Url,
             j.IsApplied,
+            Company: j.Company,
             Platform: j.Platform)).ToList();
 
         // Se o scraper está rodando, retorna como "partial" para indicar que mais dados virão

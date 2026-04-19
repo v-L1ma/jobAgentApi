@@ -1,6 +1,8 @@
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobById;
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobs;
 using jobAgentApi.Application.Features.Jobs.Queries.GetJobsAsync;
+using jobAgentApi.Application.Features.Jobs.Queries.GetCompanyLookup;
+using jobAgentApi.Application.Features.Jobs.Queries.GetPlatformLookup;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -31,6 +33,8 @@ public class JobsController : ControllerBase
         [FromQuery] string? query,
         [FromQuery] string? stack,
         [FromQuery] string? location,
+        [FromQuery] string? company,
+        [FromQuery] string? platform,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10)
     {
@@ -48,7 +52,7 @@ public class JobsController : ControllerBase
 
         var effectiveQuery = string.IsNullOrWhiteSpace(combinedQuery) ? null : combinedQuery;
         
-        var searchQuery = new GetJobsAsyncQuery(effectiveQuery, page, pageSize, userId);
+        var searchQuery = new GetJobsAsyncQuery(effectiveQuery, company, platform, page, pageSize, userId);
         var result = await _sender.Send(searchQuery);
         return Ok(result);
     }
@@ -57,6 +61,8 @@ public class JobsController : ControllerBase
     public async Task<IActionResult> GetJobs(
         [FromQuery] string? stack,
         [FromQuery] string? location,
+        [FromQuery] string? company,
+        [FromQuery] string? platform,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10,
         [FromQuery] bool triggerScraper = false)
@@ -66,8 +72,44 @@ public class JobsController : ControllerBase
 
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
         Guid.TryParse(userIdStr, out Guid userId);
-        var query = new GetJobsQuery(stack, location, page, pageSize, userId, triggerScraper);
+        var query = new GetJobsQuery(stack, location, company, platform, page, pageSize, userId, triggerScraper);
         var result = await _sender.Send(query);
+        return Ok(result);
+    }
+
+    [HttpGet("companies/lookup")]
+    [ProducesResponseType(typeof(CompanyLookupResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetCompanyLookup(
+        [FromQuery] string? search,
+        [FromQuery] int limit = 20)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+        if (!Guid.TryParse(userIdStr, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var query = new GetCompanyLookupQuery(userId, search, limit);
+        var result = await _sender.Send(query);
+
+        return Ok(result);
+    }
+
+    [HttpGet("platforms/lookup")]
+    [ProducesResponseType(typeof(PlatformLookupResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetPlatformLookup(
+        [FromQuery] string? search,
+        [FromQuery] int limit = 20)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub);
+        if (!Guid.TryParse(userIdStr, out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var query = new GetPlatformLookupQuery(userId, search, limit);
+        var result = await _sender.Send(query);
+
         return Ok(result);
     }
 

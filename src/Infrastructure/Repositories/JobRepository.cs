@@ -28,7 +28,7 @@ internal sealed class JobRepository : IJobRepository
     public async Task<Job?> GetByPlataformJobIdOrUrlAsync(string plataformJobId, string url, CancellationToken cancellationToken = default)
     {
         var sql = @"
-            SELECT ""Id"", ""PlataformJobId"", ""Platform"", ""Title"", ""Description"", ""Url"", ""IsApplied"", ""Status"", 
+            SELECT ""Id"", ""PlataformJobId"", ""Platform"", ""Company"", ""Title"", ""Description"", ""Url"", ""IsApplied"", ""Status"", 
                    ""Active"", ""CreatedBy"", ""CreatedAt"", ""LastModifiedBy"", ""LastModifiedAt""
             FROM ""Jobs""
             WHERE ""PlataformJobId"" = @p0 OR ""Url"" = @p1
@@ -87,6 +87,8 @@ internal sealed class JobRepository : IJobRepository
 
     public async Task<(List<Job> Items, int TotalCount)> GetPagedAsync(
         string? query,
+        string? company,
+        string? platform,
         Guid? userId,
         int page,
         int pageSize,
@@ -108,6 +110,20 @@ internal sealed class JobRepository : IJobRepository
         {
             whereParts.Add($@"(j.""Title"" ILIKE @p{paramIndex} OR j.""Description"" ILIKE @p{paramIndex})");
             parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{query}%"));
+            paramIndex++;
+        }
+
+        if (!string.IsNullOrWhiteSpace(company))
+        {
+            whereParts.Add($@"j.""Company"" ILIKE @p{paramIndex}");
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{company.Trim()}%"));
+            paramIndex++;
+        }
+
+        if (!string.IsNullOrWhiteSpace(platform))
+        {
+            whereParts.Add($@"j.""Platform"" ILIKE @p{paramIndex}");
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{platform.Trim()}%"));
             paramIndex++;
         }
 
@@ -146,7 +162,7 @@ internal sealed class JobRepository : IJobRepository
         var whereSql = whereParts.Count > 0 ? " WHERE " + string.Join(" AND ", whereParts) : string.Empty;
 
         // Colunas SELECT
-        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Platform"", j.""Title"", LEFT(COALESCE(j.""Description"", ''), 2000) AS ""Description"", j.""Url"",
+        var columns = @"j.""Id"", j.""PlataformJobId"", j.""Platform"", j.""Company"", j.""Title"", LEFT(COALESCE(j.""Description"", ''), 2000) AS ""Description"", j.""Url"",
                    j.""IsApplied"", j.""Status"", j.""Active"", j.""CreatedBy"", j.""CreatedAt"",
                    j.""LastModifiedBy"", j.""LastModifiedAt""";
 
@@ -199,6 +215,204 @@ internal sealed class JobRepository : IJobRepository
         }
     }
 
+    public async Task<List<string>> GetCompanyLookupAsync(
+        Guid userId,
+        string? search,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId == Guid.Empty)
+        {
+            return [];
+        }
+
+        var safeLimit = Math.Clamp(limit, 1, 100);
+        var parameters = new List<NpgsqlParameter>();
+        var whereParts = new List<string>
+        {
+            @"j.""Company"" IS NOT NULL",
+            @"BTRIM(j.""Company"") <> ''"
+        };
+
+        var paramIndex = 0;
+
+        whereParts.Add($@"(
+                NOT EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND sq.""Keywords"" IS NOT NULL
+                      AND array_length(sq.""Keywords"", 1) > 0
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    INNER JOIN LATERAL unnest(sq.""Keywords"") AS kw ON TRUE
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND (
+                          j.""Title"" ILIKE '%' || kw || '%'
+                          OR j.""Description"" ILIKE '%' || kw || '%'
+                      )
+                )
+            )");
+        parameters.Add(new NpgsqlParameter($"@p{paramIndex}", userId));
+        paramIndex++;
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            whereParts.Add($@"j.""Company"" ILIKE @p{paramIndex}");
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{search.Trim()}%"));
+            paramIndex++;
+        }
+
+        var whereSql = " WHERE " + string.Join(" AND ", whereParts);
+        var sql = $@"
+            SELECT DISTINCT j.""Company""
+            FROM ""Jobs"" j
+            {whereSql}
+            ORDER BY j.""Company"" ASC
+            LIMIT @p{paramIndex}";
+
+        parameters.Add(new NpgsqlParameter($"@p{paramIndex}", safeLimit));
+
+        try
+        {
+            var companies = new List<string>();
+
+            await using var command = _dbContext.Database.GetDbConnection().CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddRange(parameters.ToArray());
+
+            if (_dbContext.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+            {
+                await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+            }
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                var value = reader.GetString(0).Trim();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    companies.Add(value);
+                }
+            }
+
+            return companies;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao executar lookup de empresas de vagas. SQL: {Sql}", sql);
+            throw;
+        }
+    }
+
+    public async Task<List<string>> GetPlatformLookupAsync(
+        Guid userId,
+        string? search,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId == Guid.Empty)
+        {
+            return [];
+        }
+
+        var safeLimit = Math.Clamp(limit, 1, 100);
+        var parameters = new List<NpgsqlParameter>();
+        var whereParts = new List<string>
+        {
+            @"j.""Platform"" IS NOT NULL",
+            @"BTRIM(j.""Platform"") <> ''"
+        };
+
+        var paramIndex = 0;
+
+        whereParts.Add($@"(
+                NOT EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND sq.""Keywords"" IS NOT NULL
+                      AND array_length(sq.""Keywords"", 1) > 0
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM ""UserSearchQueries"" usq
+                    INNER JOIN ""SearchQueries"" sq ON sq.""Id"" = usq.""SearchQueryId""
+                    INNER JOIN LATERAL unnest(sq.""Keywords"") AS kw ON TRUE
+                    WHERE usq.""UserId"" = @p{paramIndex}
+                      AND (
+                          j.""Title"" ILIKE '%' || kw || '%'
+                          OR j.""Description"" ILIKE '%' || kw || '%'
+                      )
+                )
+            )");
+        parameters.Add(new NpgsqlParameter($"@p{paramIndex}", userId));
+        paramIndex++;
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            whereParts.Add($@"j.""Platform"" ILIKE @p{paramIndex}");
+            parameters.Add(new NpgsqlParameter($"@p{paramIndex}", $"%{search.Trim()}%"));
+            paramIndex++;
+        }
+
+        var whereSql = " WHERE " + string.Join(" AND ", whereParts);
+        var sql = $@"
+            SELECT DISTINCT j.""Platform""
+            FROM ""Jobs"" j
+            {whereSql}
+            ORDER BY j.""Platform"" ASC
+            LIMIT @p{paramIndex}";
+
+        parameters.Add(new NpgsqlParameter($"@p{paramIndex}", safeLimit));
+
+        try
+        {
+            var platforms = new List<string>();
+
+            await using var command = _dbContext.Database.GetDbConnection().CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddRange(parameters.ToArray());
+
+            if (_dbContext.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+            {
+                await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+            }
+
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (reader.IsDBNull(0))
+                {
+                    continue;
+                }
+
+                var value = reader.GetString(0).Trim();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    platforms.Add(value);
+                }
+            }
+
+            return platforms;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Erro ao executar lookup de plataformas de vagas. SQL: {Sql}", sql);
+            throw;
+        }
+    }
+
     public Task<bool> AddAsync(Job job, CancellationToken cancellationToken = default)
     {
         try
@@ -239,6 +453,9 @@ internal sealed class JobRepository : IJobRepository
             Id = reader.GetGuid(reader.GetOrdinal("Id")),
             PlataformJobId = reader.GetString(reader.GetOrdinal("PlataformJobId")),
             Platform = reader.GetString(reader.GetOrdinal("Platform")),
+            Company = reader.IsDBNull(reader.GetOrdinal("Company"))
+                ? string.Empty
+                : reader.GetString(reader.GetOrdinal("Company")),
             Title = reader.GetString(reader.GetOrdinal("Title")),
             Description = reader.GetString(reader.GetOrdinal("Description")),
             Url = reader.GetString(reader.GetOrdinal("Url")),

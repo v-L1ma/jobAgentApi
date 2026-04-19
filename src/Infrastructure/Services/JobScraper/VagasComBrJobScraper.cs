@@ -353,9 +353,9 @@ internal sealed class VagasComBrJobScraper : IVagasComBrJobScraper
                 return {
                     Title: readText(['h2 a', '.titulo-vaga a', '.nome-vaga a', 'a[href*="/vagas-de-"]', 'h2', '.titulo', '.titulo-vaga', '.nome-vaga']),
                     Href: readHref(['h2 a', '.titulo-vaga a', '.nome-vaga a', 'a[href*="/vagas-de-"]', 'a[href]']),
-                    Company: readText(['.empresa', '.nome-empresa', '[class*="empresa"]']) || 'Empresa não informada',
+                    Company: readText(['.company', '.nome-empresa', '[class*="empresa"]']) || 'Empresa não informada',
                     Location: readText(['.localizacao', '.local', '[class*="localizacao"]', '[class*="local"]']) || 'Local não informado',
-                    Description: readText(['.descricao', '.descricao-vaga', '.resumo-vaga', 'p'])
+                    Description: readText(['job-tab-content job-description__text texto','.descricao', '.descricao-vaga', '.resumo-vaga', 'p'])
                 };
             }
             """) ?? new VagasCardData();

@@ -121,6 +121,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                             Platform.Gupy,
                             job.Id,
                             job.Title,
+                            job.Company,
                             job.Url,
                             job.Description,
                             cancellationToken),
@@ -160,6 +161,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                             Platform.VagasComBr,
                             job.Id,
                             job.Title,
+                            job.Company,
                             job.Url,
                             job.Description,
                             cancellationToken),
@@ -182,6 +184,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                             Platform.LinkedIn,
                             job.Id,
                             job.Title,
+                            job.Company,
                             job.Url,
                             job.Description,
                             cancellationToken),
@@ -242,6 +245,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
         Platform platform,
         string jobId,
         string title,
+        string? company,
         string url,
         string? description,
         CancellationToken cancellationToken)
@@ -303,6 +307,11 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                     existingJob.Platform = platform.ToString();
                 }
 
+                if (string.IsNullOrWhiteSpace(existingJob.Company) && !string.IsNullOrWhiteSpace(company))
+                {
+                    existingJob.Company = company.Trim();
+                }
+
                 counters.MarkSkipped();
                 _logger.LogWarning(
                     "[{Platform}] Job SKIPPED reason=already_exists jobId={JobId} title={Title} url={Url}",
@@ -331,6 +340,7 @@ internal sealed class JobScraperExecutionService : IJobScraperExecutionService
                 Id = Guid.NewGuid(),
                 PlataformJobId = jobId,
                 Platform = platform.ToString(),
+                Company = string.IsNullOrWhiteSpace(company) ? "Empresa não informada" : company.Trim(),
                 Title = title,
                 Description = description ?? string.Empty,
                 Url = url,

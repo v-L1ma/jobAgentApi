@@ -27,6 +27,8 @@ public sealed class GetJobByIdQueryHandler : IQueryHandler<GetJobByIdQuery, JobR
             job.Id,
             job.PlataformJobId,
             job.Title,
+            job.Company,
+            job.Platform,
             job.Description,
             job.Url,
             job.IsApplied,

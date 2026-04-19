@@ -8,6 +8,8 @@ public record JobResponse(
     Guid Id,
     string PlataformJobId,
     string Title,
+    string? Company,
+    string? Platform,
     string Description,
     string Url,
     bool IsApplied,

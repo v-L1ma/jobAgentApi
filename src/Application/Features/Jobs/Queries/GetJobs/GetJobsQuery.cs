@@ -5,6 +5,8 @@ namespace jobAgentApi.Application.Features.Jobs.Queries.GetJobs;
 public record GetJobsQuery(
     string? Stack = null,
     string? Location = null,
+    string? Company = null,
+    string? Platform = null,
     int Page = 1,
     int PageSize = 10,
     Guid? UserId = null,
@@ -28,4 +30,5 @@ public record JobListItemResponse(
     string Description,
     string Url,
     bool IsApplied,
+    string? Company = null,
     string? Platform = null);

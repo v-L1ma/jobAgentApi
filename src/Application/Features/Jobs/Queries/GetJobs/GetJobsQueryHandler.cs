@@ -41,6 +41,8 @@ public sealed class GetJobsQueryHandler : IQueryHandler<GetJobsQuery, PagedJobsR
 
         var (items, totalCount) = await jobRepository.GetPagedAsync(
             query,
+            request.Company,
+            request.Platform,
             request.UserId,
             request.Page,
             request.PageSize,
@@ -54,6 +56,7 @@ public sealed class GetJobsQueryHandler : IQueryHandler<GetJobsQuery, PagedJobsR
             j.Description,
             j.Url,
             j.IsApplied,
+            j.Company,
             j.Platform)).ToList();
 
         return new PagedJobsResponse(responseItems, totalCount, request.Page, totalPages, scraperResult);
